@@ -12,10 +12,11 @@ namespace Servidor
 {
     class Program
     {
-        static TcpListener server;
-        static List<TcpClient> clientes = new List<TcpClient>();
+        // Variáveis globais
+        static TcpListener server; // Servidor TCP
+        static List<TcpClient> clientes = new List<TcpClient>(); // Lista de clientes conectados
         static Dictionary<string, string> chavesPublicas = new Dictionary<string, string>(); // username → chave pública
-        static object lockObj = new object();
+        static object lockObj = new object(); // Objeto de bloqueio para acesso seguro à lista de clientes
 
         static void Main(string[] args)
         {
@@ -51,7 +52,7 @@ namespace Servidor
                     {
                         case ProtocolSICmdType.USER_OPTION_1:
                             // Enviar pedido de autenticação
-                            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "Envie o seu nome de utilizador:");
+                            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "utilizador");
                             ns.Write(msg, 0, msg.Length);
                             break;
 
@@ -62,7 +63,7 @@ namespace Servidor
                                 Console.WriteLine($"[Servidor] Utilizador identificado: {username}");
 
                                 // Responde pedindo a chave pública
-                                byte[] resposta = protocolo.Make(ProtocolSICmdType.DATA, "Envie a sua chave pública (base64):");
+                                byte[] resposta = protocolo.Make(ProtocolSICmdType.DATA, "chave pública");
                                 ns.Write(resposta, 0, resposta.Length);
                             }
                             else if (!chavesPublicas.ContainsKey(username))
@@ -70,10 +71,10 @@ namespace Servidor
                                 string chavePublicaBase64 = protocolo.GetStringFromData();
                                 chavesPublicas[username] = chavePublicaBase64;
                                 Console.WriteLine($"[Servidor] Chave pública recebida de {username}");
-
                                 // Avisar cliente que está autenticado
                                 byte[] ok = protocolo.Make(ProtocolSICmdType.DATA, "Autenticado com sucesso!");
                                 ns.Write(ok, 0, ok.Length);
+                                
 
                                 // Adicionar à lista de clientes
                                 lock (lockObj)
@@ -91,6 +92,11 @@ namespace Servidor
 
                         case ProtocolSICmdType.EOF:
                             break;
+
+                        case ProtocolSICmdType.EOT:
+                            // Cliente desconectou
+                            Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
+                            return;
 
                         default:
                             break;
@@ -127,5 +133,7 @@ namespace Servidor
                 }
             }
         }
+
+
     }
 }
