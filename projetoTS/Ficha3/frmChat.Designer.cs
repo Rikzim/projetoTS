@@ -1,6 +1,6 @@
 ﻿namespace Ficha3
 {
-    partial class Form1
+    partial class frmChat
     {
         /// <summary>
         /// Variável de designer necessária.
@@ -28,7 +28,7 @@
         /// </summary>
         private void InitializeComponent()
         {
-            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(frmChat));
             this.rtbChat = new System.Windows.Forms.RichTextBox();
             this.txtMensagem = new System.Windows.Forms.RichTextBox();
             this.txtUsername = new System.Windows.Forms.Label();
@@ -38,7 +38,6 @@
             this.pictureBox3 = new System.Windows.Forms.PictureBox();
             this.pictureBox1 = new System.Windows.Forms.PictureBox();
             this.pictureBox2 = new System.Windows.Forms.PictureBox();
-            this.Ligar = new System.Windows.Forms.Button();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox4)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox3)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
@@ -75,7 +74,7 @@
             this.txtUsername.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(113)))), ((int)(((byte)(113)))), ((int)(((byte)(113)))));
             this.txtUsername.Font = new System.Drawing.Font("Microsoft Sans Serif", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.txtUsername.ForeColor = System.Drawing.SystemColors.ButtonHighlight;
-            this.txtUsername.Location = new System.Drawing.Point(709, 182);
+            this.txtUsername.Location = new System.Drawing.Point(709, 192);
             this.txtUsername.Name = "txtUsername";
             this.txtUsername.Size = new System.Drawing.Size(51, 20);
             this.txtUsername.TabIndex = 6;
@@ -91,16 +90,17 @@
             this.sair.Font = new System.Drawing.Font("Microsoft Sans Serif", 14.25F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.sair.ForeColor = System.Drawing.SystemColors.ControlLightLight;
             this.sair.ImageAlign = System.Drawing.ContentAlignment.TopRight;
-            this.sair.Location = new System.Drawing.Point(713, 453);
+            this.sair.Location = new System.Drawing.Point(621, 453);
             this.sair.Name = "sair";
-            this.sair.Size = new System.Drawing.Size(134, 42);
+            this.sair.Size = new System.Drawing.Size(226, 42);
             this.sair.TabIndex = 3;
             this.sair.Text = "Sair";
             this.sair.UseVisualStyleBackColor = false;
+            this.sair.Click += new System.EventHandler(this.sair_Click);
             // 
             // enviar
             // 
-            this.enviar.BackColor = System.Drawing.Color.YellowGreen;
+            this.enviar.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(68)))), ((int)(((byte)(255)))), ((int)(((byte)(0)))));
             this.enviar.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Zoom;
             this.enviar.FlatAppearance.MouseDownBackColor = System.Drawing.Color.YellowGreen;
             this.enviar.FlatAppearance.MouseOverBackColor = System.Drawing.Color.YellowGreen;
@@ -142,7 +142,7 @@
             // 
             this.pictureBox1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(113)))), ((int)(((byte)(113)))), ((int)(((byte)(113)))));
             this.pictureBox1.Image = global::Ficha3.Properties.Resources.pfp;
-            this.pictureBox1.Location = new System.Drawing.Point(661, 24);
+            this.pictureBox1.Location = new System.Drawing.Point(661, 34);
             this.pictureBox1.Name = "pictureBox1";
             this.pictureBox1.Size = new System.Drawing.Size(150, 150);
             this.pictureBox1.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
@@ -158,31 +158,12 @@
             this.pictureBox2.TabIndex = 7;
             this.pictureBox2.TabStop = false;
             // 
-            // Ligar
-            // 
-            this.Ligar.BackColor = System.Drawing.Color.Blue;
-            this.Ligar.BackgroundImageLayout = System.Windows.Forms.ImageLayout.Zoom;
-            this.Ligar.FlatAppearance.MouseDownBackColor = System.Drawing.Color.Red;
-            this.Ligar.FlatAppearance.MouseOverBackColor = System.Drawing.Color.Red;
-            this.Ligar.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
-            this.Ligar.Font = new System.Drawing.Font("Microsoft Sans Serif", 14.25F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.Ligar.ForeColor = System.Drawing.SystemColors.ControlLightLight;
-            this.Ligar.ImageAlign = System.Drawing.ContentAlignment.TopRight;
-            this.Ligar.Location = new System.Drawing.Point(621, 453);
-            this.Ligar.Name = "Ligar";
-            this.Ligar.Size = new System.Drawing.Size(86, 42);
-            this.Ligar.TabIndex = 10;
-            this.Ligar.Text = "Ligar";
-            this.Ligar.UseVisualStyleBackColor = false;
-            this.Ligar.Click += new System.EventHandler(this.Ligar_Click);
-            // 
-            // Form1
+            // frmChat
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(84)))), ((int)(((byte)(84)))), ((int)(((byte)(84)))));
             this.ClientSize = new System.Drawing.Size(859, 511);
-            this.Controls.Add(this.Ligar);
             this.Controls.Add(this.pictureBox4);
             this.Controls.Add(this.pictureBox3);
             this.Controls.Add(this.pictureBox1);
@@ -193,9 +174,10 @@
             this.Controls.Add(this.rtbChat);
             this.Controls.Add(this.pictureBox2);
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
-            this.Name = "Form1";
+            this.Name = "frmChat";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Text = "PrivyChat";
+            this.Load += new System.EventHandler(this.frmChat_Load);
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox4)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox3)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
@@ -216,7 +198,6 @@
         private System.Windows.Forms.PictureBox pictureBox2;
         private System.Windows.Forms.PictureBox pictureBox3;
         private System.Windows.Forms.PictureBox pictureBox4;
-        private System.Windows.Forms.Button Ligar;
     }
 }
 
