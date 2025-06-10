@@ -230,10 +230,9 @@ namespace Servidor
                                 // Cifrar a mensagem com a chave AES do destinatário
                                 string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
 
-                                // Combina mensagem cifrada + assinatura + status de verificação
-                                string dadosParaEnviar = msgCifrada + "||" + assinaturaOriginal + "||VALID";
-
-                                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, dadosParaEnviar);
+                                // CORREÇÃO: Enviar apenas a mensagem cifrada, 
+                                // sem a assinatura (já foi verificada pelo servidor)
+                                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
                                 ns.Write(dados, 0, dados.Length);
                             }
                         }

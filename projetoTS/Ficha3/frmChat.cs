@@ -110,20 +110,27 @@ namespace Ficha3
         {
             try
             {
-                // Formato esperado: mensagemCifrada||assinatura
+                // Verifica se é uma mensagem com assinatura (formato: mensagemCifrada||assinatura||VALID)
                 string[] partes = dadosRecebidos.Split(new string[] { "||" }, StringSplitOptions.None);
 
-                if (partes.Length == 2)
+                if (partes.Length == 3 && partes[2] == "VALID")
                 {
+                    // Mensagem com assinatura já verificada pelo servidor
+                    string mensagemCifrada = partes[0];
+                    string mensagemDecifrada = DecifrarMensagem(mensagemCifrada);
+
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        Log($"✓ {mensagemDecifrada}"); // ✓ indica que a assinatura foi verificada pelo servidor
+                    }));
+                }
+                else if (partes.Length == 2)
+                {
+                    // Formato antigo com assinatura para verificação local
                     string mensagemCifrada = partes[0];
                     string assinaturaBase64 = partes[1];
 
-                    // Decifra a mensagem
-                    MessageBox.Show("Mensagem recebida: " + mensagemCifrada, "Informação", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     string mensagemDecifrada = DecifrarMensagem(mensagemCifrada);
-                    MessageBox.Show("Mensagem decifrada: " + mensagemDecifrada, "Informação", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                    // Verifica a assinatura (assumindo que tens a chave pública do remetente)
                     bool assinaturaValida = VerificarAssinatura(mensagemDecifrada, assinaturaBase64);
 
                     string statusAssinatura = assinaturaValida ? "✓" : "✗";
@@ -135,7 +142,7 @@ namespace Ficha3
                 }
                 else
                 {
-                    // Mensagem sem assinatura (compatibilidade)
+                    // Mensagem simples cifrada (sem assinatura)
                     string mensagemDecifrada = DecifrarMensagem(dadosRecebidos);
                     Invoke(new MethodInvoker(() =>
                     {
