@@ -27,8 +27,8 @@ namespace Ficha3
         String nomeUtilizador;
 
         // Chave e IV fixos (para testes simples)
-        byte[] chaveAES = Encoding.UTF8.GetBytes("minha_chave_segura_256bits!!"); // 24 ou 32 bytes
-        byte[] ivAES = Encoding.UTF8.GetBytes("iv_simples_16byte"); // 16 bytes
+        private Aes aesCliente; // Será configurado quando recebermos do servidor
+        private bool chaveAESRecebida = false;
 
         public frmChat(string nomeUtilizador)
         {
@@ -53,33 +53,50 @@ namespace Ficha3
         {
             while (true)
             {
-                ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
-                if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
+                try
                 {
-                    string texto = protocolo.GetStringFromData();
+                    ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                    if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
+                    {
+                        string texto = protocolo.GetStringFromData();
 
-                    // Resposta do servidor a cada fase
+                        // Envia o username
+                        if (texto.Contains("utilizador"))
+                        {
+                            string nome = txtUsername.Text.Trim();
+                            byte[] nomeBytes = protocolo.Make(ProtocolSICmdType.DATA, nome);
+                            ns.Write(nomeBytes, 0, nomeBytes.Length);
+                        }
+                        // Envia a chave pública
+                        else if (texto.Contains("chave pública"))
+                        {
+                            string chavePublica = rsa.ToXmlString(false);
+                            byte[] chaveBytes = protocolo.Make(ProtocolSICmdType.DATA, chavePublica);
+                            ns.Write(chaveBytes, 0, chaveBytes.Length);
+                        }
+                        // Recebe a chave AES cifrada
+                        else if (texto.Contains("|") && !chaveAESRecebida)
+                        {
+                            ProcessarChaveAESRecebida(texto);
+                        }
+                        // Mensagens normais do chat
+                        else
+                        {
+                            string mensagemDecifrada = DecifrarMensagem(texto);
+                            Invoke(new MethodInvoker(() =>
+                            {
+                                Log(mensagemDecifrada);
+                            }));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
                     Invoke(new MethodInvoker(() =>
                     {
-                        Log(texto);
+                        MessageBox.Show("Erro ao receber mensagens: " + ex.Message);
                     }));
-
-                    // Envia o username
-                    if (texto.Contains("utilizador"))
-                    {
-                        string nome = txtUsername.Text.Trim();
-                        byte[] nomeBytes = protocolo.Make(ProtocolSICmdType.DATA, nome);
-                        ns.Write(nomeBytes, 0, nomeBytes.Length);
-                    }
-
-                    // Envia a chave pública
-                    if (texto.Contains("chave pública"))
-                    {
-                        string chavePublicaBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(rsa.ToXmlString(false)));
-                        MessageBox.Show("Chave pública enviada: " + chavePublicaBase64, "Chave Pública", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        byte[] chaveBytes = protocolo.Make(ProtocolSICmdType.DATA, chavePublicaBase64);
-                        ns.Write(chaveBytes, 0, chaveBytes.Length);
-                    }
+                    break;
                 }
             }
         }
@@ -95,10 +112,17 @@ namespace Ficha3
 
             if (!string.IsNullOrEmpty(texto))
             {
-                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, texto);
+                if (!chaveAESRecebida)
+                {
+                    MessageBox.Show("Aguarde a troca de chaves ser completada.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string mensagemCifrada = CifrarMensagem(texto);
+                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, mensagemCifrada);
                 ns.Write(dados, 0, dados.Length);
                 txtMensagem.Clear();
-                Log("[Eu]: " + texto);
+                Log("[Eu]: " + texto); // Mostra a mensagem original (não cifrada) no chat
             }
         }
 
@@ -159,20 +183,115 @@ namespace Ficha3
             }
         }
 
+        private void ProcessarChaveAESRecebida(string chaveCifrada)
+        {
+            try
+            {
+                string[] partes = chaveCifrada.Split('|');
+                if (partes.Length != 2) return;
+
+                byte[] chaveAESCifrada = Convert.FromBase64String(partes[0]);
+                byte[] ivCifrado = Convert.FromBase64String(partes[1]);
+
+                // Decifra com a chave privada RSA
+                byte[] chaveAESBytes = rsa.Decrypt(chaveAESCifrada, false);
+                byte[] ivBytes = rsa.Decrypt(ivCifrado, false);
+
+                // Configura o AES
+                aesCliente = Aes.Create();
+                aesCliente.Key = chaveAESBytes;
+                aesCliente.IV = ivBytes;
+                chaveAESRecebida = true;
+
+                Invoke(new MethodInvoker(() =>
+                {
+                    MessageBox.Show("Chave AES configurada com sucesso!", "Segurança", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }));
+            }
+            catch (Exception ex)
+            {
+                Invoke(new MethodInvoker(() =>
+                {
+                    MessageBox.Show("Erro ao processar chave AES: " + ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }));
+            }
+        }
+
+        private string CifrarMensagem(string mensagem)
+        {
+            if (!chaveAESRecebida || aesCliente == null)
+            {
+                MessageBox.Show("Chave AES não está pronta. Aguarde a configuração.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return mensagem;
+            }
+
+            try
+            {
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    using (CryptoStream cs = new CryptoStream(ms, aesCliente.CreateEncryptor(), CryptoStreamMode.Write))
+                    {
+                        byte[] textoBytes = Encoding.UTF8.GetBytes(mensagem);
+                        cs.Write(textoBytes, 0, textoBytes.Length);
+                        cs.FlushFinalBlock();
+                        return Convert.ToBase64String(ms.ToArray());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao cifrar mensagem: " + ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return mensagem;
+            }
+        }
+
+        private string DecifrarMensagem(string mensagemCifrada)
+        {
+            if (!chaveAESRecebida || aesCliente == null)
+                return mensagemCifrada;
+
+            try
+            {
+                byte[] textoBytes = Convert.FromBase64String(mensagemCifrada);
+                using (MemoryStream ms = new MemoryStream(textoBytes))
+                {
+                    using (CryptoStream cs = new CryptoStream(ms, aesCliente.CreateDecryptor(), CryptoStreamMode.Read))
+                    {
+                        using (StreamReader sr = new StreamReader(cs))
+                        {
+                            return sr.ReadToEnd();
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                return mensagemCifrada;
+            }
+        }
+
         private void sair_Click(object sender, EventArgs e)
         {
             try
             {
-                tReceber.Abort(); // Interrompe a thread de recebimento de mensagens
+                tReceber.Abort();
 
                 if (ns != null)
                 {
                     byte[] eotPacket = protocolo.Make(ProtocolSICmdType.EOT);
-                    ns.Write(eotPacket, 0, eotPacket.Length); // Envia EOT para o servidor
-                    ns.Close(); // Fecha o stream
+                    ns.Write(eotPacket, 0, eotPacket.Length);
+                    ns.Close();
                 }
-                client.Close(); // Fecha a conexão com o servidor
-                this.Close(); // Fecha o formulário
+
+                // Limpa as chaves de criptografia
+                if (aesCliente != null)
+                {
+                    aesCliente.Dispose();
+                    aesCliente = null;
+                }
+
+                client.Close();
+                this.Close();
             }
             catch (Exception ex)
             {

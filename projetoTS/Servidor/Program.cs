@@ -17,6 +17,12 @@ namespace Servidor
         static List<TcpClient> clientes = new List<TcpClient>(); // Lista de clientes conectados
         static Dictionary<string, string> chavesPublicas = new Dictionary<string, string>(); // username → chave pública
         static object lockObj = new object(); // Objeto de bloqueio para acesso seguro à lista de clientes
+        // Chaves AES para cada cliente
+        static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>(); // username → chave AES
+        static RSACryptoServiceProvider rsaServidor = new RSACryptoServiceProvider(2048); // RSA do servidor
+
+        static Dictionary<TcpClient, string> clientesUsernames = new Dictionary<TcpClient, string>();
+
 
         static void Main(string[] args)
         {
@@ -60,33 +66,36 @@ namespace Servidor
                             if (string.IsNullOrEmpty(username))
                             {
                                 username = protocolo.GetStringFromData();
+                                lock (lockObj)
+                                {
+                                    clientes.Add(cliente);
+                                    clientesUsernames[cliente] = username;
+                                }
                                 Console.WriteLine($"[Servidor] Utilizador identificado: {username}");
 
-                                // Responde pedindo a chave pública
+                                // Responde pedindo a chave pública do cliente
                                 byte[] resposta = protocolo.Make(ProtocolSICmdType.DATA, "chave pública");
                                 ns.Write(resposta, 0, resposta.Length);
                             }
                             else if (!chavesPublicas.ContainsKey(username))
                             {
+                                // Recebe a chave pública do cliente
                                 string chavePublicaBase64 = protocolo.GetStringFromData();
                                 chavesPublicas[username] = chavePublicaBase64;
                                 Console.WriteLine($"[Servidor] Chave pública recebida de {username}");
-                                // Avisar cliente que está autenticado
-                                byte[] ok = protocolo.Make(ProtocolSICmdType.DATA, "Autenticado com sucesso!");
-                                ns.Write(ok, 0, ok.Length);
-                                
 
-                                // Adicionar à lista de clientes
-                                lock (lockObj)
-                                    clientes.Add(cliente);
+                                // Cria e envia a chave AES cifrada com RSA
+                                EnviarChaveAES(username, ns, protocolo);
                             }
                             else
                             {
-                                string msgChat = protocolo.GetStringFromData();
-                                Console.WriteLine($"[Mensagem de {username}]: {msgChat}");
+                                // Processa mensagens cifradas
+                                string msgCifradaBase64 = protocolo.GetStringFromData();
+                                string msgDecifrada = DecifrarMensagem(username, msgCifradaBase64);
+                                Console.WriteLine($"[Mensagem de {username}]: {msgDecifrada}");
 
-                                // Enviar mensagem a todos os outros clientes
-                                EnviarParaTodos($"[{username}]: {msgChat}", cliente);
+                                // Cifra novamente para enviar aos outros clientes
+                                EnviarParaTodos($"[{username}]: {msgDecifrada}", cliente);
                             }
                             break;
 
@@ -96,6 +105,7 @@ namespace Servidor
                         case ProtocolSICmdType.EOT:
                             // Cliente desconectou
                             Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
+                            EnviarParaTodos($"[{username}] Desconectou-se", cliente);
                             return;
 
                         default:
@@ -111,7 +121,13 @@ namespace Servidor
             {
                 cliente.Close();
                 lock (lockObj)
+                {
                     clientes.Remove(cliente);
+                    clientesUsernames.Remove(cliente);
+                }
+                if (!string.IsNullOrEmpty(username))
+                    EnviarParaTodos($"[{username}] Desconectou-se", cliente);
+
                 Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
             }
         }
@@ -119,7 +135,6 @@ namespace Servidor
         static void EnviarParaTodos(string mensagem, TcpClient remetente)
         {
             ProtocolSI protocolo = new ProtocolSI();
-            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, mensagem);
 
             lock (lockObj)
             {
@@ -127,9 +142,95 @@ namespace Servidor
                 {
                     if (cli != remetente)
                     {
-                        NetworkStream ns = cli.GetStream();
-                        ns.Write(dados, 0, dados.Length);
+                        try
+                        {
+                            NetworkStream ns = cli.GetStream();
+                            // Obter username do destinatário (você precisará implementar isso)
+                            string usernameDestino = ObterUsername(cli);
+
+                            // Cifrar a mensagem com a chave AES do destinatário
+                            string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
+                            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
+
+                            ns.Write(dados, 0, dados.Length);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[Erro ao enviar mensagem] {ex.Message}");
+                        }
                     }
+                }
+            }
+        }
+
+        static string ObterUsername(TcpClient cliente)
+        {
+            lock (lockObj)
+            {
+                if (clientesUsernames.ContainsKey(cliente))
+                    return clientesUsernames[cliente];
+                return null;
+            }
+        }
+
+        static void EnviarChaveAES(string username, NetworkStream ns, ProtocolSI protocolo)
+        {
+            // Cria chave AES para este cliente
+            Aes aes = Aes.Create();
+            aes.KeySize = 256;
+            aes.GenerateKey();
+            aes.GenerateIV();
+            chavesAES[username] = aes;
+
+            // Cifra a chave AES com a chave pública do cliente
+            RSACryptoServiceProvider rsaCliente = new RSACryptoServiceProvider();
+            rsaCliente.FromXmlString(chavesPublicas[username]);
+
+            byte[] chaveAESCifrada = rsaCliente.Encrypt(aes.Key, false);
+            byte[] ivCifrado = rsaCliente.Encrypt(aes.IV, false);
+
+            // Envia a chave cifrada para o cliente
+            string resposta = Convert.ToBase64String(chaveAESCifrada) + "|" + Convert.ToBase64String(ivCifrado);
+            byte[] packet = protocolo.Make(ProtocolSICmdType.DATA, resposta);
+            ns.Write(packet, 0, packet.Length);
+
+            Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
+        }
+
+        static string DecifrarMensagem(string username, string msgCifradaBase64)
+        {
+            if (!chavesAES.ContainsKey(username))
+                throw new Exception("Chave AES não encontrada para o utilizador");
+
+            Aes aes = chavesAES[username];
+            byte[] msgCifrada = Convert.FromBase64String(msgCifradaBase64);
+
+            using (MemoryStream ms = new MemoryStream())
+            {
+                using (CryptoStream cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
+                {
+                    cs.Write(msgCifrada, 0, msgCifrada.Length);
+                    cs.FlushFinalBlock();
+                    return Encoding.UTF8.GetString(ms.ToArray());
+                }
+            }
+        }
+
+        static string CifrarMensagem(string username, string mensagem)
+        {
+            if (!chavesAES.ContainsKey(username))
+                throw new Exception("Chave AES não encontrada para o utilizador");
+
+            Aes aes = chavesAES[username];
+            byte[] msgBytes = Encoding.UTF8.GetBytes(mensagem);
+
+            using (MemoryStream ms = new MemoryStream())
+            {
+                using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                {
+                    cs.Write(msgBytes, 0, msgBytes.Length);
+                    cs.FlushFinalBlock();
+                    return Convert.ToBase64String(ms.ToArray());
                 }
             }
         }
