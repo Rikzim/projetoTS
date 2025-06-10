@@ -17,12 +17,13 @@ using EI.SI;
 
 namespace Ficha3
 {
-    public partial class frmChat: Form
+    public partial class frmChat : Form
     {
         TcpClient client;
         NetworkStream ns;
         ProtocolSI protocolo;
         RSACryptoServiceProvider rsa;
+        RSACryptoServiceProvider rsaSign; // Para assinatura digital
         Thread tReceber;
         String nomeUtilizador;
 
@@ -35,7 +36,9 @@ namespace Ficha3
             InitializeComponent();
 
             protocolo = new ProtocolSI();
-            rsa = new RSACryptoServiceProvider(2048); // Gera chave pública/privada
+            rsa = new RSACryptoServiceProvider(2048); // Para troca de chaves
+            rsaSign = new RSACryptoServiceProvider(2048); // Para assinatura digital
+
             // Recebe o nome de utilizador do formulário de login
             this.nomeUtilizador = nomeUtilizador;
             txtUsername.Text = nomeUtilizador; // Preenche o campo de username
@@ -47,7 +50,6 @@ namespace Ficha3
         {
             InciarChat(); // Inicia a conexão com o servidor quando o formulário é carregado
         }
-
 
         private void ReceberMensagens()
         {
@@ -67,11 +69,18 @@ namespace Ficha3
                             byte[] nomeBytes = protocolo.Make(ProtocolSICmdType.DATA, nome);
                             ns.Write(nomeBytes, 0, nomeBytes.Length);
                         }
-                        // Envia a chave pública
+                        // Envia a chave pública (para troca de chaves AES)
                         else if (texto.Contains("chave pública"))
                         {
                             string chavePublica = rsa.ToXmlString(false);
                             byte[] chaveBytes = protocolo.Make(ProtocolSICmdType.DATA, chavePublica);
+                            ns.Write(chaveBytes, 0, chaveBytes.Length);
+                        }
+                        // Envia a chave pública para assinatura digital
+                        else if (texto.Contains("chave assinatura"))
+                        {
+                            string chaveAssinatura = rsaSign.ToXmlString(false);
+                            byte[] chaveBytes = protocolo.Make(ProtocolSICmdType.DATA, chaveAssinatura);
                             ns.Write(chaveBytes, 0, chaveBytes.Length);
                         }
                         // Recebe a chave AES cifrada
@@ -79,14 +88,10 @@ namespace Ficha3
                         {
                             ProcessarChaveAESRecebida(texto);
                         }
-                        // Mensagens normais do chat
+                        // Mensagens normais do chat (agora com verificação de assinatura)
                         else
                         {
-                            string mensagemDecifrada = DecifrarMensagem(texto);
-                            Invoke(new MethodInvoker(() =>
-                            {
-                                Log(mensagemDecifrada);
-                            }));
+                            ProcessarMensagemRecebida(texto);
                         }
                     }
                 }
@@ -98,6 +103,69 @@ namespace Ficha3
                     }));
                     break;
                 }
+            }
+        }
+
+        private void ProcessarMensagemRecebida(string dadosRecebidos)
+        {
+            try
+            {
+                // Formato esperado: mensagemCifrada||assinatura
+                string[] partes = dadosRecebidos.Split(new string[] { "||" }, StringSplitOptions.None);
+
+                if (partes.Length == 2)
+                {
+                    string mensagemCifrada = partes[0];
+                    string assinaturaBase64 = partes[1];
+
+                    // Decifra a mensagem
+                    MessageBox.Show("Mensagem recebida: " + mensagemCifrada, "Informação", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    string mensagemDecifrada = DecifrarMensagem(mensagemCifrada);
+                    MessageBox.Show("Mensagem decifrada: " + mensagemDecifrada, "Informação", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                    // Verifica a assinatura (assumindo que tens a chave pública do remetente)
+                    bool assinaturaValida = VerificarAssinatura(mensagemDecifrada, assinaturaBase64);
+
+                    string statusAssinatura = assinaturaValida ? "✓" : "✗";
+
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        Log($"{statusAssinatura} {mensagemDecifrada}");
+                    }));
+                }
+                else
+                {
+                    // Mensagem sem assinatura (compatibilidade)
+                    string mensagemDecifrada = DecifrarMensagem(dadosRecebidos);
+                    Invoke(new MethodInvoker(() =>
+                    {
+                        Log(mensagemDecifrada);
+                    }));
+                }
+            }
+            catch (Exception ex)
+            {
+                Invoke(new MethodInvoker(() =>
+                {
+                    Log("Erro ao processar mensagem: " + ex.Message);
+                }));
+            }
+        }
+
+        private bool VerificarAssinatura(string mensagem, string assinaturaBase64)
+        {
+            try
+            {
+                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
+                byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
+
+                // Nota: Aqui precisarias da chave pública do remetente
+                // Por simplicidade, estou usando a mesma chave (para teste)
+                return rsaSign.VerifyData(dados, CryptoConfig.MapNameToOID("SHA256"), assinatura);
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -118,11 +186,42 @@ namespace Ficha3
                     return;
                 }
 
-                string mensagemCifrada = CifrarMensagem(texto);
-                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, mensagemCifrada);
-                ns.Write(dados, 0, dados.Length);
-                txtMensagem.Clear();
-                Log("[Eu]: " + texto); // Mostra a mensagem original (não cifrada) no chat
+                try
+                {
+                    // 1. Cifra a mensagem com AES
+                    string mensagemCifrada = CifrarMensagem(texto);
+
+                    // 2. Assina a mensagem original (antes de cifrar)
+                    string assinatura = AssinarMensagem(texto);
+
+                    // 3. Combina mensagem cifrada e assinatura
+                    string dadosParaEnviar = mensagemCifrada + "||" + assinatura;
+
+                    // 4. Envia tudo
+                    byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, dadosParaEnviar);
+                    ns.Write(dados, 0, dados.Length);
+
+                    txtMensagem.Clear();
+                    Log("[Eu]: " + texto + " ✓"); // Mostra a mensagem original com indicador de assinada
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Erro ao enviar mensagem: " + ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private string AssinarMensagem(string mensagem)
+        {
+            try
+            {
+                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
+                byte[] assinatura = rsaSign.SignData(dados, CryptoConfig.MapNameToOID("SHA256"));
+                return Convert.ToBase64String(assinatura);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Erro ao assinar mensagem: " + ex.Message);
             }
         }
 
@@ -153,13 +252,12 @@ namespace Ficha3
             string dbFileName = "PrivyChat.mdf"; // ou "Data\\PrivyChat.mdf" se estiver em uma subpasta
             string dbFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dbFileName);
 
-            string connectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True"); 
+            string connectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True");
 
             using (SqlConnection conn = new SqlConnection(connectionString))
             {
                 conn.Open();
                 string sql = "SELECT ProfileImage FROM Users WHERE Username = @Username";
-
 
                 using (SqlCommand cmd = new SqlCommand(sql, conn))
                 {
@@ -221,8 +319,7 @@ namespace Ficha3
         {
             if (!chaveAESRecebida || aesCliente == null)
             {
-                MessageBox.Show("Chave AES não está pronta. Aguarde a configuração.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return mensagem;
+                throw new Exception("Chave AES não está pronta.");
             }
 
             try
@@ -240,8 +337,7 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro ao cifrar mensagem: " + ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return mensagem;
+                throw new Exception("Erro ao cifrar mensagem: " + ex.Message);
             }
         }
 
@@ -288,6 +384,12 @@ namespace Ficha3
                 {
                     aesCliente.Dispose();
                     aesCliente = null;
+                }
+
+                if (rsaSign != null)
+                {
+                    rsaSign.Dispose();
+                    rsaSign = null;
                 }
 
                 client.Close();
