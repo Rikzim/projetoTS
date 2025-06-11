@@ -51,7 +51,7 @@
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="ProtocolSI">
-      <HintPath>..\..\..\..\..\Downloads\ProtocolSI.dll</HintPath>
+      <HintPath>..\..\..\TS\Ficha3\lib\ProtocolSI.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
