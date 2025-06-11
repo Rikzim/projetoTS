@@ -188,15 +188,12 @@ namespace Servidor
                               "|" +
                               Convert.ToBase64String(rsaCliente.Encrypt(aes.IV, false));
 
-            string resposta = Convert.ToBase64String(rsaCliente.Encrypt(aes.Key, false)) +
-                          "|" +
-                          Convert.ToBase64String(rsaCliente.Encrypt(aes.IV, false));
+                byte[] packet = protocolo.Make(ProtocolSICmdType.DATA, resposta);
+                ns.Write(packet, 0, packet.Length);
 
-            byte[] packet = protocolo.Make(ProtocolSICmdType.DATA, resposta);
-            ns.Write(packet, 0, packet.Length);
-
-            rsaCliente.Dispose();
-            Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
+                rsaCliente.Dispose();
+                Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
+            }
         }
 
         static string DecifrarMensagem(string username, string msgCifradaBase64)
@@ -218,18 +215,20 @@ namespace Servidor
 
         static bool VerificarAssinatura(string username, string mensagem, string assinaturaBase64)
         {
-            cliente.Close();
-            lock (lockObj)
+            try
             {
-                if (!chavesPublicasAssinatura.ContainsKey(username))
-                    return false;
-                RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
-                rsa.FromXmlString(chavesPublicasAssinatura[username]);
-                byte[] data = Encoding.UTF8.GetBytes(mensagem);
-                byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
-                bool result = rsa.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), assinatura);
-                rsa.Dispose();
-                return result;
+                lock (lockObj)
+                {
+                    if (!chavesPublicasAssinatura.ContainsKey(username))
+                        return false;
+                    RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
+                    rsa.FromXmlString(chavesPublicasAssinatura[username]);
+                    byte[] data = Encoding.UTF8.GetBytes(mensagem);
+                    byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
+                    bool result = rsa.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), assinatura);
+                    rsa.Dispose();
+                    return result;
+                }
             }
             catch
             {

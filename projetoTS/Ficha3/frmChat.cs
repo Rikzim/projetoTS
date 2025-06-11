@@ -181,7 +181,8 @@ namespace Ficha3
                 {
                     Send(ProtocolSICmdType.EOT, "");
                 }
-                catch { 
+                catch
+                {
 
                 }
                 if (tReceber != null && tReceber.IsAlive)

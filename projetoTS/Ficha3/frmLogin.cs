@@ -1,65 +1,71 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Data.SqlClient;
-using System.Drawing;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using EI.SI;
 
 namespace Ficha3
 {
-    public partial class frmLogin: Form
+    public partial class frmLogin : Form
     {
-        private const int NUMBER_OF_ITERATIONS = 1000;
+        private TcpClient client;
+        private NetworkStream ns;
+        private ProtocolSI protocolo;
 
         public frmLogin()
         {
             InitializeComponent();
+            protocolo = new ProtocolSI();
         }
 
-        private void pictureBox1_Click(object sender, EventArgs e)
+        private void ConectarServidor()
         {
-
+            try
+            {
+                client = new TcpClient("127.0.0.1", 12345);
+                ns = client.GetStream();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao conectar ao servidor: " + ex.Message);
+            }
         }
 
         private bool VerifyLogin(string username, string password)
         {
-            SqlConnection conn = null;
             try
             {
-                // Configurar ligação à Base de Dados
-                conn = new SqlConnection();
+                ConectarServidor();
 
-                string dbFileName = "PrivyChat.mdf"; // ou "Data\\PrivyChat.mdf" se estiver em uma subpasta
-                string dbFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dbFileName);
+                // Envia comando de login
+                string loginData = $"LOGIN|{username}|{password}";
+                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, loginData);
+                ns.Write(dados, 0, dados.Length);
 
-                conn.ConnectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True");
+                // Recebe resposta
+                ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                string resposta = protocolo.GetStringFromData();
 
                 return resposta == "LOGIN_OK";
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                MessageBox.Show("An error occurred: " + e.Message);
+                MessageBox.Show("Erro ao verificar login: " + ex.Message);
                 return false;
             }
-        }
-        private static byte[] GenerateSaltedHash(string plainText, byte[] salt)
-        {
-            Rfc2898DeriveBytes rfc2898 = new Rfc2898DeriveBytes(plainText, salt, NUMBER_OF_ITERATIONS);
-            return rfc2898.GetBytes(32);
         }
 
         private void btnEntrar_Click(object sender, EventArgs e)
         {
-            // Guarda a password e o salt gerados
             string password = txtPassword.Text;
             string username = txtUsername.Text;
-            // Verifica se o utilizador existe na Base de Dados
+
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("Preencha todos os campos!");
+                return;
+            }
+
             try
             {
                 if (VerifyLogin(username, password))
@@ -67,7 +73,7 @@ namespace Ficha3
                     MessageBox.Show("Login Realizado!");
                     frmChat form1 = new frmChat(username, client, ns, protocolo);
                     form1.Show();
-                    this.Hide(); // Esconde o formulário de login
+                    this.Hide();
                 }
                 else
                 {
@@ -76,7 +82,7 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Ocorreu um erro ao entrar: " + ex.Message);
+                MessageBox.Show("Erro ao entrar: " + ex.Message);
             }
         }
 
