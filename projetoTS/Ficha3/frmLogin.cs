@@ -27,9 +27,6 @@ namespace Ficha3
 
         }
 
-
-        
-
         private bool VerifyLogin(string username, string password)
         {
             SqlConnection conn = null;
