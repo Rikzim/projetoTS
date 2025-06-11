@@ -7,30 +7,31 @@ using System.Text;
 using System.Threading;
 using EI.SI;
 using System.Security.Cryptography;
+using System.Linq;
 
 namespace Servidor
 {
     class Program
     {
-        // Variáveis globais
-        static TcpListener server; // Servidor TCP
-        static List<TcpClient> clientes = new List<TcpClient>(); // Lista de clientes conectados
-        static Dictionary<string, string> chavesPublicas = new Dictionary<string, string>(); // username → chave pública RSA (para AES)
-        static Dictionary<string, string> chavesAssinatura = new Dictionary<string, string>(); // username → chave pública RSA (para assinatura)
-        static object lockObj = new object(); // Objeto de bloqueio para acesso seguro à lista de clientes
-        // Chaves AES para cada cliente
-        static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>(); // username → chave AES
+        // Variáveis de servidor e estado
+        static TcpListener server;                                                     // Servidor TCP para aceitar conexões
+        static List<TcpClient> clientes = new List<TcpClient>();                      // Lista de clientes conectados
+        static Dictionary<string, string> chavesPublicas = new Dictionary<string, string>();        // Armazena chaves públicas RSA para AES por username
+        static Dictionary<string, string> chavesAssinatura = new Dictionary<string, string>();      // Armazena chaves públicas RSA para assinatura por username
+        static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>();                   // Armazena chaves AES por username
+        static Dictionary<TcpClient, string> clientesUsernames = new Dictionary<TcpClient, string>();// Mapeia clientes para usernames
+        static object lockObj = new object();                                         // Lock para acesso thread-safe às coleções
         static RSACryptoServiceProvider rsaServidor = new RSACryptoServiceProvider(2048); // RSA do servidor
 
-        static Dictionary<TcpClient, string> clientesUsernames = new Dictionary<TcpClient, string>();
-
+        // Método principal que inicia o servidor
         static void Main(string[] args)
         {
-            int porta = 12345;
-            server = new TcpListener(IPAddress.Any, porta);
+            // Configura e inicia o servidor na porta 12345
+            server = new TcpListener(IPAddress.Any, 12345);
             server.Start();
-            Console.WriteLine($"[Servidor] A ouvir na porta {porta}...");
+            Console.WriteLine("[Servidor] A ouvir na porta 12345...");
 
+            // Loop principal que aceita novas conexões
             while (true)
             {
                 TcpClient client = server.AcceptTcpClient();
@@ -40,12 +41,12 @@ namespace Servidor
             }
         }
 
+        // Gerencia a comunicação com um cliente específico
         static void TratarCliente(object obj)
         {
             TcpClient cliente = (TcpClient)obj;
             NetworkStream ns = cliente.GetStream();
             ProtocolSI protocolo = new ProtocolSI();
-
             string username = "";
             bool chaveAESEnviada = false;
 
@@ -53,72 +54,25 @@ namespace Servidor
             {
                 while (true)
                 {
+                    // Lê dados do cliente
                     ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                    ProtocolSICmdType cmdType = protocolo.GetCmdType();
 
-                    switch (protocolo.GetCmdType())
+                    switch (cmdType)
                     {
-                        case ProtocolSICmdType.USER_OPTION_1:
-                            // Enviar pedido de autenticação
-                            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "utilizador");
-                            ns.Write(msg, 0, msg.Length);
+                        case ProtocolSICmdType.USER_OPTION_1: // Pedido inicial de autenticação
+                            byte[] msgAuth = protocolo.Make(ProtocolSICmdType.DATA, "utilizador");
+                            ns.Write(msgAuth, 0, msgAuth.Length);
                             break;
 
-                        case ProtocolSICmdType.DATA:
+                        case ProtocolSICmdType.DATA: // Processar dados recebidos
                             string dados = protocolo.GetStringFromData();
-
-                            if (string.IsNullOrEmpty(username))
-                            {
-                                // Primeiro dados recebidos: username
-                                username = dados;
-                                lock (lockObj)
-                                {
-                                    clientes.Add(cliente);
-                                    clientesUsernames[cliente] = username;
-                                }
-                                Console.WriteLine($"[Servidor] Utilizador identificado: {username}");
-
-                                // Responde pedindo a chave pública do cliente (para AES)
-                                byte[] resposta = protocolo.Make(ProtocolSICmdType.DATA, "chave pública");
-                                ns.Write(resposta, 0, resposta.Length);
-                            }
-                            else if (!chavesPublicas.ContainsKey(username))
-                            {
-                                // Segunda: Recebe a chave pública do cliente (para AES)
-                                chavesPublicas[username] = dados;
-                                Console.WriteLine($"[Servidor] Chave pública (AES) recebida de {username}");
-
-                                // Pede a chave pública para assinatura
-                                byte[] resposta = protocolo.Make(ProtocolSICmdType.DATA, "chave assinatura");
-                                ns.Write(resposta, 0, resposta.Length);
-                            }
-                            else if (!chavesAssinatura.ContainsKey(username))
-                            {
-                                // Terceira: Recebe a chave pública para assinatura
-                                chavesAssinatura[username] = dados;
-                                Console.WriteLine($"[Servidor] Chave pública (assinatura) recebida de {username}");
-
-                                // Agora sim, envia a chave AES cifrada
-                                EnviarChaveAES(username, ns, protocolo);
-                                chaveAESEnviada = true;
-                            }
-                            else if (chaveAESEnviada)
-                            {
-                                // Quarta em diante: Processa mensagens com assinatura
-                                ProcessarMensagemComAssinatura(username, dados, cliente);
-                            }
+                            ProcessarDados(dados, ref username, cliente, ns, protocolo, ref chaveAESEnviada);
                             break;
 
-                        case ProtocolSICmdType.EOF:
-                            break;
-
-                        case ProtocolSICmdType.EOT:
-                            // Cliente desconectou
-                            Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
-                            EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
+                        case ProtocolSICmdType.EOT: // Cliente desconectou
+                            NotificarDesconexao(username, cliente);
                             return;
-
-                        default:
-                            break;
                     }
                 }
             }
@@ -128,63 +82,100 @@ namespace Servidor
             }
             finally
             {
-                cliente.Close();
-                lock (lockObj)
-                {
-                    clientes.Remove(cliente);
-                    clientesUsernames.Remove(cliente);
-                }
-                if (!string.IsNullOrEmpty(username))
-                    EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
-
-                Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
+                FinalizarConexao(cliente, username);
             }
         }
 
+        // Processa os dados recebidos do cliente baseado no estado da conexão
+        static void ProcessarDados(string dados, ref string username, TcpClient cliente, NetworkStream ns, ProtocolSI protocolo, ref bool chaveAESEnviada)
+        {
+            if (string.IsNullOrEmpty(username)) // Primeira mensagem - username
+            {
+                IniciarNovoCliente(dados, cliente, ns, protocolo, ref username);
+            }
+            else if (!chavesPublicas.ContainsKey(username)) // Segunda mensagem - chave pública AES
+            {
+                ReceberChavePublicaAES(dados, username, ns, protocolo);
+            }
+            else if (!chavesAssinatura.ContainsKey(username)) // Terceira mensagem - chave pública assinatura
+            {
+                ReceberChaveAssinatura(dados, username, ns, protocolo, ref chaveAESEnviada);
+            }
+            else if (chaveAESEnviada) // Mensagens subsequentes - chat normal
+            {
+                ProcessarMensagemComAssinatura(username, dados, cliente);
+            }
+        }
+
+        // Registra um novo cliente no servidor
+        static void IniciarNovoCliente(string dados, TcpClient cliente, NetworkStream ns, ProtocolSI protocolo, ref string username)
+        {
+            username = dados;
+            lock (lockObj)
+            {
+                clientes.Add(cliente);
+                clientesUsernames[cliente] = username;
+            }
+            Console.WriteLine($"[Servidor] Utilizador identificado: {username}");
+            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "chave pública");
+            ns.Write(msg, 0, msg.Length);
+        }
+
+        // Recebe e armazena a chave pública RSA para AES do cliente
+        static void ReceberChavePublicaAES(string dados, string username, NetworkStream ns, ProtocolSI protocolo)
+        {
+            chavesPublicas[username] = dados;
+            Console.WriteLine($"[Servidor] Chave pública (AES) recebida de {username}");
+            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "chave assinatura");
+            ns.Write(msg, 0, msg.Length);
+        }
+
+        // Recebe a chave pública RSA para assinatura e envia a chave AES
+        static void ReceberChaveAssinatura(string dados, string username, NetworkStream ns, ProtocolSI protocolo, ref bool chaveAESEnviada)
+        {
+            chavesAssinatura[username] = dados;
+            Console.WriteLine($"[Servidor] Chave pública (assinatura) recebida de {username}");
+            EnviarChaveAES(username, ns, protocolo);
+            chaveAESEnviada = true;
+        }
+
+        // Processa mensagens assinadas do chat
         static void ProcessarMensagemComAssinatura(string remetente, string dadosRecebidos, TcpClient clienteRemetente)
         {
             try
             {
-                // Formato esperado: mensagemCifrada||assinatura
-                string[] partes = dadosRecebidos.Split(new string[] { "||" }, StringSplitOptions.None);
-
-                if (partes.Length == 2)
+                // Divide a mensagem em duas partes: mensagem cifrada e assinatura
+                string[] partes = dadosRecebidos.Split(new[] { "||" }, StringSplitOptions.None);
+                if (partes.Length != 2)
                 {
-                    string mensagemCifrada = partes[0];
-                    string assinaturaBase64 = partes[1];
+                    Console.WriteLine($"[ERRO] Formato de mensagem inválido de {remetente}");
+                    return;
+                }
 
-                    // Decifra a mensagem
-                    string mensagemDecifrada = DecifrarMensagem(remetente, mensagemCifrada);
+                // Decifra a mensagem e verifica a assinatura
+                string mensagemDecifrada = DecifrarMensagem(remetente, partes[0]);
+                bool assinaturaValida = VerificarAssinatura(remetente, mensagemDecifrada, partes[1]);
 
-                    // Verifica a assinatura
-                    bool assinaturaValida = VerificarAssinatura(remetente, mensagemDecifrada, assinaturaBase64);
+                Console.WriteLine($"[{(assinaturaValida ? "✓" : "✗")} Mensagem de {remetente}]: {mensagemDecifrada}");
 
-                    string statusAssinatura = assinaturaValida ? "✓" : "✗";
-                    Console.WriteLine($"[{statusAssinatura} Mensagem de {remetente}]: {mensagemDecifrada}");
-
-                    if (assinaturaValida)
-                    {
-                        // Reenvia a mensagem para todos os outros clientes (com a assinatura original)
-                        string mensagemCompleta = $"[{remetente}]: {mensagemDecifrada}";
-                        EnviarParaTodosComAssinatura(mensagemCompleta, clienteRemetente, remetente, assinaturaBase64);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[AVISO] Assinatura inválida de {remetente}. Mensagem não foi retransmitida.");
-                        // Opcionalmente, podes enviar uma notificação de erro para o remetente
-                    }
+                // Se a assinatura for válida, encaminha para outros clientes
+                if (assinaturaValida)
+                {
+                    string mensagemCompleta = $"[{remetente}]: {mensagemDecifrada}";
+                    EnviarParaTodos(mensagemCompleta, clienteRemetente, remetente);
                 }
                 else
                 {
-                    Console.WriteLine($"[ERRO] Formato de mensagem inválido de {remetente}");
+                    Console.WriteLine($"[AVISO] Assinatura inválida de {remetente}");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Erro ao processar mensagem com assinatura] {ex.Message}");
+                Console.WriteLine($"[Erro ao processar mensagem] {ex.Message}");
             }
         }
 
+        // Verifica a assinatura digital de uma mensagem
         static bool VerificarAssinatura(string username, string mensagem, string assinaturaBase64)
         {
             try
@@ -197,11 +188,12 @@ namespace Servidor
 
                 RSACryptoServiceProvider rsaVerify = new RSACryptoServiceProvider();
                 rsaVerify.FromXmlString(chavesAssinatura[username]);
-
                 byte[] dados = Encoding.UTF8.GetBytes(mensagem);
                 byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
 
-                return rsaVerify.VerifyData(dados, CryptoConfig.MapNameToOID("SHA256"), assinatura);
+                bool result = rsaVerify.VerifyData(dados, CryptoConfig.MapNameToOID("SHA256"), assinatura);
+                rsaVerify.Dispose();
+                return result;
             }
             catch (Exception ex)
             {
@@ -210,45 +202,10 @@ namespace Servidor
             }
         }
 
-        static void EnviarParaTodosComAssinatura(string mensagem, TcpClient remetente, string usernameRemetente, string assinaturaOriginal)
-        {
-            ProtocolSI protocolo = new ProtocolSI();
-
-            lock (lockObj)
-            {
-                foreach (TcpClient cli in clientes)
-                {
-                    if (cli != remetente)
-                    {
-                        try
-                        {
-                            NetworkStream ns = cli.GetStream();
-                            string usernameDestino = ObterUsername(cli);
-
-                            if (usernameDestino != null)
-                            {
-                                // Cifrar a mensagem com a chave AES do destinatário
-                                string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
-
-                                // CORREÇÃO: Enviar apenas a mensagem cifrada, 
-                                // sem a assinatura (já foi verificada pelo servidor)
-                                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
-                                ns.Write(dados, 0, dados.Length);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[Erro ao enviar mensagem] {ex.Message}");
-                        }
-                    }
-                }
-            }
-        }
-
+        // Envia uma mensagem para todos os clientes conectados exceto o remetente
         static void EnviarParaTodos(string mensagem, TcpClient remetente, string usernameRemetente)
         {
             ProtocolSI protocolo = new ProtocolSI();
-
             lock (lockObj)
             {
                 foreach (TcpClient cli in clientes)
@@ -259,15 +216,12 @@ namespace Servidor
                         {
                             NetworkStream ns = cli.GetStream();
                             string usernameDestino = ObterUsername(cli);
+                            if (string.IsNullOrEmpty(usernameDestino)) continue;
 
-                            if (usernameDestino != null)
-                            {
-                                // Cifrar a mensagem com a chave AES do destinatário
-                                string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
-                                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
-
-                                ns.Write(dados, 0, dados.Length);
-                            }
+                            // Cifra a mensagem com a chave AES do destinatário
+                            string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
+                            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
+                            ns.Write(dados, 0, dados.Length);
                         }
                         catch (Exception ex)
                         {
@@ -278,19 +232,19 @@ namespace Servidor
             }
         }
 
+        // Obtém o username associado a um cliente
         static string ObterUsername(TcpClient cliente)
         {
             lock (lockObj)
             {
-                if (clientesUsernames.ContainsKey(cliente))
-                    return clientesUsernames[cliente];
-                return null;
+                return clientesUsernames.ContainsKey(cliente) ? clientesUsernames[cliente] : null;
             }
         }
 
+        // Gera e envia uma nova chave AES para um cliente
         static void EnviarChaveAES(string username, NetworkStream ns, ProtocolSI protocolo)
         {
-            // Cria chave AES para este cliente
+            // Cria uma nova chave AES
             Aes aes = Aes.Create();
             aes.KeySize = 256;
             aes.GenerateKey();
@@ -301,17 +255,18 @@ namespace Servidor
             RSACryptoServiceProvider rsaCliente = new RSACryptoServiceProvider();
             rsaCliente.FromXmlString(chavesPublicas[username]);
 
-            byte[] chaveAESCifrada = rsaCliente.Encrypt(aes.Key, false);
-            byte[] ivCifrado = rsaCliente.Encrypt(aes.IV, false);
+            string resposta = Convert.ToBase64String(rsaCliente.Encrypt(aes.Key, false)) +
+                          "|" +
+                          Convert.ToBase64String(rsaCliente.Encrypt(aes.IV, false));
 
-            // Envia a chave cifrada para o cliente
-            string resposta = Convert.ToBase64String(chaveAESCifrada) + "|" + Convert.ToBase64String(ivCifrado);
             byte[] packet = protocolo.Make(ProtocolSICmdType.DATA, resposta);
             ns.Write(packet, 0, packet.Length);
 
+            rsaCliente.Dispose();
             Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
         }
 
+        // Decifra uma mensagem usando a chave AES do usuário
         static string DecifrarMensagem(string username, string msgCifradaBase64)
         {
             if (!chavesAES.ContainsKey(username))
@@ -321,16 +276,15 @@ namespace Servidor
             byte[] msgCifrada = Convert.FromBase64String(msgCifradaBase64);
 
             using (MemoryStream ms = new MemoryStream())
+            using (CryptoStream cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
             {
-                using (CryptoStream cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
-                {
-                    cs.Write(msgCifrada, 0, msgCifrada.Length);
-                    cs.FlushFinalBlock();
-                    return Encoding.UTF8.GetString(ms.ToArray());
-                }
+                cs.Write(msgCifrada, 0, msgCifrada.Length);
+                cs.FlushFinalBlock();
+                return Encoding.UTF8.GetString(ms.ToArray());
             }
         }
 
+        // Cifra uma mensagem usando a chave AES do usuário
         static string CifrarMensagem(string username, string mensagem)
         {
             if (!chavesAES.ContainsKey(username))
@@ -340,13 +294,34 @@ namespace Servidor
             byte[] msgBytes = Encoding.UTF8.GetBytes(mensagem);
 
             using (MemoryStream ms = new MemoryStream())
+            using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
             {
-                using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
-                {
-                    cs.Write(msgBytes, 0, msgBytes.Length);
-                    cs.FlushFinalBlock();
-                    return Convert.ToBase64String(ms.ToArray());
-                }
+                cs.Write(msgBytes, 0, msgBytes.Length);
+                cs.FlushFinalBlock();
+                return Convert.ToBase64String(ms.ToArray());
+            }
+        }
+
+        //Notifica outros clientes sobre a desconexão de um usuário
+        static void NotificarDesconexao(string username, TcpClient cliente)
+        {
+            Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
+            EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
+        }
+
+        // Finaliza a conexão de um cliente e limpa seus recursos
+        static void FinalizarConexao(TcpClient cliente, string username)
+        {
+            cliente.Close();
+            lock (lockObj)
+            {
+                clientes.Remove(cliente);
+                clientesUsernames.Remove(cliente);
+            }
+            if (!string.IsNullOrEmpty(username))
+            {
+                EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
+                Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
             }
         }
     }
