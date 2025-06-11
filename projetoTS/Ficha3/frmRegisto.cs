@@ -10,27 +10,9 @@ namespace Ficha3
 {
     public partial class frmRegisto : Form
     {
-        private TcpClient client;
-        private NetworkStream ns;
-        private ProtocolSI protocolo;
-
         public frmRegisto()
         {
             InitializeComponent();
-            protocolo = new ProtocolSI();
-        }
-
-        private void ConectarServidor()
-        {
-            try
-            {
-                client = new TcpClient("127.0.0.1", 12345);
-                ns = client.GetStream();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Erro ao conectar ao servidor: " + ex.Message);
-            }
         }
         private void btnRegistar_Click(object sender, EventArgs e)
         {
@@ -55,22 +37,22 @@ namespace Ficha3
         {
             try
             {
-                ConectarServidor();
+                // Use a NEW connection for registration
+                using (TcpClient regClient = new TcpClient("127.0.0.1", 12345))
+                using (NetworkStream regNs = regClient.GetStream())
+                {
+                    ProtocolSI regProtocolo = new ProtocolSI();
 
+                    string registerData = $"REGISTER|{username}|{password}";
+                    byte[] dados = regProtocolo.Make(ProtocolSICmdType.DATA, registerData);
+                    regNs.Write(dados, 0, dados.Length);
 
-                // Envia comando de registro
-                string registerData = $"REGISTER|{username}|{password}";
-                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, registerData);
-                ns.Write(dados, 0, dados.Length);
+                    regNs.Read(regProtocolo.Buffer, 0, regProtocolo.Buffer.Length);
+                    string resposta = regProtocolo.GetStringFromData();
 
-                // Recebe resposta
-                ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
-                string resposta = protocolo.GetStringFromData();
-
-                if (resposta != "REGISTER_OK")
-                    throw new Exception("Erro ao registrar usuário");
-
-                client.Close();
+                    if (resposta != "REGISTER_OK")
+                        throw new Exception("Erro ao registrar usuário: " + resposta);
+                }
             }
             catch (Exception ex)
             {

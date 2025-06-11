@@ -121,7 +121,8 @@ namespace Servidor
             }
             catch (IOException ex)
             {
-                Console.WriteLine("[INFO] Cliente " + username + " desconectou-se (" + ex.Message + ").");
+                if (!string.IsNullOrEmpty(username))
+                    Console.WriteLine("[INFO] Cliente " + username + " desconectou-se (" + ex.Message + ").");
             }
             catch (Exception ex)
             {
