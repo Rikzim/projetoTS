@@ -141,13 +141,6 @@
     <None Include="Resources\logo.png" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="PrivyChat.mdf">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-    <Content Include="PrivyChat_log.ldf">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      <DependentUpon>PrivyChat.mdf</DependentUpon>
-    </Content>
     <None Include="Resources\Group 3.png" />
   </ItemGroup>
   <ItemGroup>
