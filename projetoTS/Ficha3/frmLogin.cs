@@ -40,46 +40,7 @@ namespace Ficha3
 
                 conn.ConnectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True");
 
-                // Abrir ligação à Base de Dados
-                conn.Open();
-
-                // Declaração do comando SQL
-                String sql = "SELECT * FROM Users WHERE Username = @username";
-                SqlCommand cmd = new SqlCommand();
-                cmd.CommandText = sql;
-
-                // Declaração dos parâmetros do comando SQL
-                SqlParameter param = new SqlParameter("@username", username);
-
-                // Introduzir valor ao parâmentro registado no comando SQL
-                cmd.Parameters.Add(param);
-
-                // Associar ligação à Base de Dados ao comando a ser executado
-                cmd.Connection = conn;
-
-                // Executar comando SQL
-                SqlDataReader reader = cmd.ExecuteReader();
-
-                if (!reader.HasRows)
-                {
-                    throw new Exception("Error while trying to access an user");
-                }
-
-                // Ler resultado da pesquisa
-                reader.Read();
-
-                // Obter Hash (password + salt)
-                byte[] saltedPasswordHashStored = (byte[])reader["SaltedPasswordHash"];
-
-                // Obter salt
-                byte[] saltStored = (byte[])reader["Salt"];
-
-                conn.Close();
-
-                //TODO: verificar se a password na base de dados
-                byte[] saltedPasswordHash = GenerateSaltedHash(password, saltStored);
-                // Comparar o hash da password introduzida com o hash da password guardada na base de dados
-                return saltedPasswordHash.SequenceEqual(saltedPasswordHashStored);
+                return resposta == "LOGIN_OK";
             }
             catch (Exception e)
             {
@@ -104,7 +65,7 @@ namespace Ficha3
                 if (VerifyLogin(username, password))
                 {
                     MessageBox.Show("Login Realizado!");
-                    frmChat form1 = new frmChat(username);
+                    frmChat form1 = new frmChat(username, client, ns, protocolo);
                     form1.Show();
                     this.Hide(); // Esconde o formulário de login
                 }

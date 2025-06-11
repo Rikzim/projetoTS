@@ -1,51 +1,43 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data.SqlClient;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using EI.SI;
-using System.Security.Cryptography;
-using System.Linq;
 
 namespace Servidor
 {
     class Program
     {
-        // Variáveis de servidor e estado
-        static TcpListener server;                                                     // Servidor TCP para aceitar conexões
-        static List<TcpClient> clientes = new List<TcpClient>();                      // Lista de clientes conectados
-        static Dictionary<string, string> chavesPublicas = new Dictionary<string, string>();        // Armazena chaves públicas RSA para AES por username
-        static Dictionary<string, string> chavesAssinatura = new Dictionary<string, string>();      // Armazena chaves públicas RSA para assinatura por username
-        static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>();                   // Armazena chaves AES por username
-        static Dictionary<TcpClient, string> clientesUsernames = new Dictionary<TcpClient, string>();// Mapeia clientes para usernames
-        static object lockObj = new object();                                         // Lock para acesso thread-safe às coleções
-        static RSACryptoServiceProvider rsaServidor = new RSACryptoServiceProvider(2048); // RSA do servidor
+        static Dictionary<string, TcpClient> clientes = new Dictionary<string, TcpClient>();
+        static Dictionary<string, string> chavesPublicasAES = new Dictionary<string, string>();
+        static Dictionary<string, string> chavesPublicasAssinatura = new Dictionary<string, string>();
+        static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>();
+        static object lockObj = new object();
 
-        // Método principal que inicia o servidor
         static void Main(string[] args)
         {
-            // Configura e inicia o servidor na porta 12345
-            server = new TcpListener(IPAddress.Any, 12345);
-            server.Start();
-            Console.WriteLine("[Servidor] A ouvir na porta 12345...");
+            InicializarBD();
 
-            // Loop principal que aceita novas conexões
+            TcpListener server = new TcpListener(IPAddress.Any, 12345);
+            server.Start();
+            Console.WriteLine("Servidor iniciado...");
+
             while (true)
             {
                 TcpClient client = server.AcceptTcpClient();
-                Console.WriteLine("[Servidor] Cliente conectado.");
-                Thread t = new Thread(TratarCliente);
-                t.Start(client);
+                Thread t = new Thread(() => HandleClient(client));
+                t.Start();
             }
         }
 
-        // Gerencia a comunicação com um cliente específico
-        static void TratarCliente(object obj)
+        static void HandleClient(TcpClient client)
         {
-            TcpClient cliente = (TcpClient)obj;
-            NetworkStream ns = cliente.GetStream();
+            NetworkStream ns = client.GetStream();
             ProtocolSI protocolo = new ProtocolSI();
             string username = "";
             bool chaveAESEnviada = false;
@@ -54,194 +46,131 @@ namespace Servidor
             {
                 while (true)
                 {
-                    // Lê dados do cliente
                     ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
-                    ProtocolSICmdType cmdType = protocolo.GetCmdType();
+                    ProtocolSICmdType cmd = protocolo.GetCmdType();
 
-                    switch (cmdType)
+                    if (cmd == ProtocolSICmdType.DATA)
                     {
-                        case ProtocolSICmdType.USER_OPTION_1: // Pedido inicial de autenticação
-                            byte[] msgAuth = protocolo.Make(ProtocolSICmdType.DATA, "utilizador");
-                            ns.Write(msgAuth, 0, msgAuth.Length);
-                            break;
+                        string msg = protocolo.GetStringFromData();
 
-                        case ProtocolSICmdType.DATA: // Processar dados recebidos
-                            string dados = protocolo.GetStringFromData();
-                            ProcessarDados(dados, ref username, cliente, ns, protocolo, ref chaveAESEnviada);
-                            break;
-
-                        case ProtocolSICmdType.EOT: // Cliente desconectou
-                            NotificarDesconexao(username, cliente);
-                            return;
+                        if (msg.StartsWith("LOGIN|"))
+                        {
+                            username = ProcessarLogin(msg, ns, protocolo);
+                            if (!string.IsNullOrEmpty(username))
+                                Console.WriteLine("Utilizador " + username + " fez login.");
+                        }
+                        else if (msg.StartsWith("REGISTER|"))
+                        {
+                            username = ProcessarRegistro(msg, ns, protocolo);
+                            if (!string.IsNullOrEmpty(username))
+                                Console.WriteLine("Utilizador " + username + " registado.");
+                        }
+                        else if (msg.StartsWith("CHAVE_PUBLICA|"))
+                        {
+                            string[] parts = msg.Split('|');
+                            if (parts.Length == 3)
+                            {
+                                if (!chavesPublicasAES.ContainsKey(parts[1]))
+                                {
+                                    lock (lockObj)
+                                    {
+                                        chavesPublicasAES[parts[1]] = parts[2];
+                                    }
+                                    ProtocolSI proto = new ProtocolSI();
+                                    byte[] resp = proto.Make(ProtocolSICmdType.DATA, "chave assinatura");
+                                    ns.Write(resp, 0, resp.Length);
+                                    continue;
+                                }
+                                else if (!chavesPublicasAssinatura.ContainsKey(parts[1]))
+                                {
+                                    lock (lockObj)
+                                    {
+                                        chavesPublicasAssinatura[parts[1]] = parts[2];
+                                    }
+                                    EnviarChaveAES(parts[1], ns, protocolo);
+                                    chaveAESEnviada = true;
+                                    lock (lockObj)
+                                    {
+                                        clientes[parts[1]] = client;
+                                    }
+                                    Console.WriteLine("Chave pública de assinatura de " + parts[1] + " recebida.");
+                                    continue;
+                                }
+                            }
+                        }
+                        else if (chaveAESEnviada && !string.IsNullOrEmpty(username))
+                        {
+                            // Mensagem cifrada e assinada: encrypted||signature
+                            string[] parts = msg.Split(new[] { "||" }, StringSplitOptions.None);
+                            if (parts.Length == 2 && chavesAES.ContainsKey(username) && chavesPublicasAssinatura.ContainsKey(username))
+                            {
+                                string decrypted = DecifrarMensagem(username, parts[0]);
+                                bool valid = VerificarAssinatura(username, decrypted, parts[1]);
+                                string label = "[" + username + "]: " + decrypted + (valid ? " ✓" : " ✗");
+                                Console.WriteLine(label);
+                                EnviarParaTodos(label, username);
+                            }
+                        }
+                    }
+                    else if (cmd == ProtocolSICmdType.EOT)
+                    {
+                        Console.WriteLine("Utilizador " + username + " desconectado.");
+                        break;
                     }
                 }
             }
+            catch (IOException ex)
+            {
+                Console.WriteLine("[INFO] Cliente " + username + " desconectou-se (" + ex.Message + ").");
+            }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Erro] {ex.Message}");
+                Console.WriteLine("[ERRO] " + ex.Message);
             }
             finally
             {
-                FinalizarConexao(cliente, username);
-            }
-        }
-
-        // Processa os dados recebidos do cliente baseado no estado da conexão
-        static void ProcessarDados(string dados, ref string username, TcpClient cliente, NetworkStream ns, ProtocolSI protocolo, ref bool chaveAESEnviada)
-        {
-            if (string.IsNullOrEmpty(username)) // Primeira mensagem - username
-            {
-                IniciarNovoCliente(dados, cliente, ns, protocolo, ref username);
-            }
-            else if (!chavesPublicas.ContainsKey(username)) // Segunda mensagem - chave pública AES
-            {
-                ReceberChavePublicaAES(dados, username, ns, protocolo);
-            }
-            else if (!chavesAssinatura.ContainsKey(username)) // Terceira mensagem - chave pública assinatura
-            {
-                ReceberChaveAssinatura(dados, username, ns, protocolo, ref chaveAESEnviada);
-            }
-            else if (chaveAESEnviada) // Mensagens subsequentes - chat normal
-            {
-                ProcessarMensagemComAssinatura(username, dados, cliente);
-            }
-        }
-
-        // Registra um novo cliente no servidor
-        static void IniciarNovoCliente(string dados, TcpClient cliente, NetworkStream ns, ProtocolSI protocolo, ref string username)
-        {
-            username = dados;
-            lock (lockObj)
-            {
-                clientes.Add(cliente);
-                clientesUsernames[cliente] = username;
-            }
-            Console.WriteLine($"[Servidor] Utilizador identificado: {username}");
-            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "chave pública");
-            ns.Write(msg, 0, msg.Length);
-        }
-
-        // Recebe e armazena a chave pública RSA para AES do cliente
-        static void ReceberChavePublicaAES(string dados, string username, NetworkStream ns, ProtocolSI protocolo)
-        {
-            chavesPublicas[username] = dados;
-            Console.WriteLine($"[Servidor] Chave pública (AES) recebida de {username}");
-            byte[] msg = protocolo.Make(ProtocolSICmdType.DATA, "chave assinatura");
-            ns.Write(msg, 0, msg.Length);
-        }
-
-        // Recebe a chave pública RSA para assinatura e envia a chave AES
-        static void ReceberChaveAssinatura(string dados, string username, NetworkStream ns, ProtocolSI protocolo, ref bool chaveAESEnviada)
-        {
-            chavesAssinatura[username] = dados;
-            Console.WriteLine($"[Servidor] Chave pública (assinatura) recebida de {username}");
-            EnviarChaveAES(username, ns, protocolo);
-            chaveAESEnviada = true;
-        }
-
-        // Processa mensagens assinadas do chat
-        static void ProcessarMensagemComAssinatura(string remetente, string dadosRecebidos, TcpClient clienteRemetente)
-        {
-            try
-            {
-                // Divide a mensagem em duas partes: mensagem cifrada e assinatura
-                string[] partes = dadosRecebidos.Split(new[] { "||" }, StringSplitOptions.None);
-                if (partes.Length != 2)
+                lock (lockObj)
                 {
-                    Console.WriteLine($"[ERRO] Formato de mensagem inválido de {remetente}");
-                    return;
+                    if (!string.IsNullOrEmpty(username)) clientes.Remove(username);
+                    if (!string.IsNullOrEmpty(username)) chavesPublicasAES.Remove(username);
+                    if (!string.IsNullOrEmpty(username)) chavesPublicasAssinatura.Remove(username);
+                    if (!string.IsNullOrEmpty(username) && chavesAES.ContainsKey(username))
+                    {
+                        chavesAES[username].Dispose();
+                        chavesAES.Remove(username);
+                    }
                 }
-
-                // Decifra a mensagem e verifica a assinatura
-                string mensagemDecifrada = DecifrarMensagem(remetente, partes[0]);
-                bool assinaturaValida = VerificarAssinatura(remetente, mensagemDecifrada, partes[1]);
-
-                Console.WriteLine($"[{(assinaturaValida ? "✓" : "✗")} Mensagem de {remetente}]: {mensagemDecifrada}");
-
-                // Se a assinatura for válida, encaminha para outros clientes
-                if (assinaturaValida)
-                {
-                    string mensagemCompleta = $"[{remetente}]: {mensagemDecifrada}";
-                    EnviarParaTodos(mensagemCompleta, clienteRemetente, remetente);
-                }
-                else
-                {
-                    Console.WriteLine($"[AVISO] Assinatura inválida de {remetente}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Erro ao processar mensagem] {ex.Message}");
+                client.Close();
             }
         }
 
-        // Verifica a assinatura digital de uma mensagem
-        static bool VerificarAssinatura(string username, string mensagem, string assinaturaBase64)
-        {
-            try
-            {
-                if (!chavesAssinatura.ContainsKey(username))
-                {
-                    Console.WriteLine($"[ERRO] Chave de assinatura não encontrada para {username}");
-                    return false;
-                }
-
-                RSACryptoServiceProvider rsaVerify = new RSACryptoServiceProvider();
-                rsaVerify.FromXmlString(chavesAssinatura[username]);
-                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
-                byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
-
-                bool result = rsaVerify.VerifyData(dados, CryptoConfig.MapNameToOID("SHA256"), assinatura);
-                rsaVerify.Dispose();
-                return result;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Erro ao verificar assinatura] {ex.Message}");
-                return false;
-            }
-        }
-
-        // Envia uma mensagem para todos os clientes conectados exceto o remetente
-        static void EnviarParaTodos(string mensagem, TcpClient remetente, string usernameRemetente)
+        static void EnviarParaTodos(string msg, string remetente)
         {
             ProtocolSI protocolo = new ProtocolSI();
+            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msg);
+
             lock (lockObj)
             {
-                foreach (TcpClient cli in clientes)
+                foreach (KeyValuePair<string, TcpClient> par in clientes)
                 {
-                    if (cli != remetente)
+                    if (par.Key != remetente)
                     {
                         try
                         {
-                            NetworkStream ns = cli.GetStream();
-                            string usernameDestino = ObterUsername(cli);
-                            if (string.IsNullOrEmpty(usernameDestino)) continue;
-
-                            // Cifra a mensagem com a chave AES do destinatário
-                            string msgCifrada = CifrarMensagem(usernameDestino, mensagem);
-                            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msgCifrada);
-                            ns.Write(dados, 0, dados.Length);
+                            par.Value.GetStream().Write(dados, 0, dados.Length);
                         }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[Erro ao enviar mensagem] {ex.Message}");
-                        }
+                        catch { }
                     }
                 }
             }
         }
 
-        // Obtém o username associado a um cliente
-        static string ObterUsername(TcpClient cliente)
+        static void Enviar(NetworkStream ns, ProtocolSI protocolo, string msg)
         {
-            lock (lockObj)
-            {
-                return clientesUsernames.ContainsKey(cliente) ? clientesUsernames[cliente] : null;
-            }
+            byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, msg);
+            ns.Write(dados, 0, dados.Length);
         }
 
-        // Gera e envia uma nova chave AES para um cliente
         static void EnviarChaveAES(string username, NetworkStream ns, ProtocolSI protocolo)
         {
             // Cria uma nova chave AES
@@ -249,11 +178,15 @@ namespace Servidor
             aes.KeySize = 256;
             aes.GenerateKey();
             aes.GenerateIV();
+
             chavesAES[username] = aes;
 
-            // Cifra a chave AES com a chave pública do cliente
-            RSACryptoServiceProvider rsaCliente = new RSACryptoServiceProvider();
-            rsaCliente.FromXmlString(chavesPublicas[username]);
+            using (var rsaCliente = new RSACryptoServiceProvider())
+            {
+                rsaCliente.FromXmlString(chavesPublicasAES[username]);
+                string resposta = Convert.ToBase64String(rsaCliente.Encrypt(aes.Key, false)) +
+                              "|" +
+                              Convert.ToBase64String(rsaCliente.Encrypt(aes.IV, false));
 
             string resposta = Convert.ToBase64String(rsaCliente.Encrypt(aes.Key, false)) +
                           "|" +
@@ -266,7 +199,6 @@ namespace Servidor
             Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
         }
 
-        // Decifra uma mensagem usando a chave AES do usuário
         static string DecifrarMensagem(string username, string msgCifradaBase64)
         {
             if (!chavesAES.ContainsKey(username))
@@ -284,44 +216,189 @@ namespace Servidor
             }
         }
 
-        // Cifra uma mensagem usando a chave AES do usuário
-        static string CifrarMensagem(string username, string mensagem)
-        {
-            if (!chavesAES.ContainsKey(username))
-                throw new Exception("Chave AES não encontrada para o utilizador");
-
-            Aes aes = chavesAES[username];
-            byte[] msgBytes = Encoding.UTF8.GetBytes(mensagem);
-
-            using (MemoryStream ms = new MemoryStream())
-            using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
-            {
-                cs.Write(msgBytes, 0, msgBytes.Length);
-                cs.FlushFinalBlock();
-                return Convert.ToBase64String(ms.ToArray());
-            }
-        }
-
-        //Notifica outros clientes sobre a desconexão de um usuário
-        static void NotificarDesconexao(string username, TcpClient cliente)
-        {
-            Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
-            EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
-        }
-
-        // Finaliza a conexão de um cliente e limpa seus recursos
-        static void FinalizarConexao(TcpClient cliente, string username)
+        static bool VerificarAssinatura(string username, string mensagem, string assinaturaBase64)
         {
             cliente.Close();
             lock (lockObj)
             {
-                clientes.Remove(cliente);
-                clientesUsernames.Remove(cliente);
+                if (!chavesPublicasAssinatura.ContainsKey(username))
+                    return false;
+                RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
+                rsa.FromXmlString(chavesPublicasAssinatura[username]);
+                byte[] data = Encoding.UTF8.GetBytes(mensagem);
+                byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
+                bool result = rsa.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), assinatura);
+                rsa.Dispose();
+                return result;
             }
-            if (!string.IsNullOrEmpty(username))
+            catch
             {
-                EnviarParaTodos($"[{username}] Desconectou-se", cliente, username);
-                Console.WriteLine($"[Servidor] Cliente {username} desconectado.");
+                return false;
+            }
+        }
+
+        static string ProcessarLogin(string dados, NetworkStream ns, ProtocolSI protocolo)
+        {
+            string[] partes = dados.Split('|');
+            if (partes.Length != 3)
+            {
+                Enviar(ns, protocolo, "LOGIN_FAIL");
+                return "";
+            }
+            string username = partes[1];
+            string password = partes[2];
+
+            try
+            {
+                using (SqlConnection conn = new SqlConnection(ObterStringConexao()))
+                {
+                    conn.Open();
+                    using (SqlCommand cmd = new SqlCommand("SELECT SaltedPasswordHash, Salt FROM Users WHERE Username = @u", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@u", username);
+                        using (SqlDataReader reader = cmd.ExecuteReader())
+                        {
+                            if (!reader.Read())
+                            {
+                                Enviar(ns, protocolo, "LOGIN_FAIL");
+                                return "";
+                            }
+                            byte[] hashDB = (byte[])reader["SaltedPasswordHash"];
+                            byte[] salt = (byte[])reader["Salt"];
+                            byte[] hash = GerarHash(password, salt);
+
+                            if (SequenceEqual(hash, hashDB))
+                            {
+                                Enviar(ns, protocolo, "LOGIN_OK");
+                                return username;
+                            }
+                            else
+                            {
+                                Enviar(ns, protocolo, "LOGIN_FAIL");
+                                return "";
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                Enviar(ns, protocolo, "LOGIN_FAIL");
+                return "";
+            }
+        }
+
+        static string ProcessarRegistro(string dados, NetworkStream ns, ProtocolSI protocolo)
+        {
+            string[] partes = dados.Split('|');
+            if (partes.Length != 3)
+            {
+                Enviar(ns, protocolo, "REGISTER_FAIL");
+                return "";
+            }
+            string username = partes[1];
+            string password = partes[2];
+
+            try
+            {
+                using (SqlConnection conn = new SqlConnection(ObterStringConexao()))
+                {
+                    conn.Open();
+
+                    using (SqlCommand check = new SqlCommand("SELECT COUNT(*) FROM Users WHERE Username=@u", conn))
+                    {
+                        check.Parameters.AddWithValue("@u", username);
+                        if ((int)check.ExecuteScalar() > 0)
+                        {
+                            Enviar(ns, protocolo, "REGISTER_FAIL_USERNAME_EXISTS");
+                            return "";
+                        }
+                    }
+
+                    byte[] salt = GerarSalt();
+                    byte[] hash = GerarHash(password, salt);
+
+                    using (SqlCommand cmd = new SqlCommand("INSERT INTO Users (Username, SaltedPasswordHash, Salt) VALUES (@u,@h,@s)", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@u", username);
+                        cmd.Parameters.AddWithValue("@h", hash);
+                        cmd.Parameters.AddWithValue("@s", salt);
+
+                        if (cmd.ExecuteNonQuery() > 0)
+                        {
+                            Enviar(ns, protocolo, "REGISTER_OK");
+                            return username;
+                        }
+                        else
+                        {
+                            Enviar(ns, protocolo, "REGISTER_FAIL");
+                            return "";
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                Enviar(ns, protocolo, "REGISTER_FAIL");
+                return "";
+            }
+        }
+
+        static string ObterStringConexao()
+        {
+            string db = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PrivyChat.mdf");
+            return @"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename=" + db + ";Integrated Security=True";
+        }
+
+        static byte[] GerarSalt()
+        {
+            byte[] salt = new byte[8];
+            using (RNGCryptoServiceProvider rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(salt);
+            }
+            return salt;
+        }
+
+        static byte[] GerarHash(string senha, byte[] salt)
+        {
+            using (Rfc2898DeriveBytes pbkdf2 = new Rfc2898DeriveBytes(senha, salt, 1000))
+            {
+                return pbkdf2.GetBytes(32);
+            }
+        }
+
+        static bool SequenceEqual(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+                if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        static void InicializarBD()
+        {
+            string db = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PrivyChat.mdf");
+            if (!File.Exists(db))
+            {
+                using (SqlConnection conn = new SqlConnection(@"Data Source=(LocalDB)\MSSQLLocalDB;Integrated Security=True"))
+                {
+                    conn.Open();
+                    using (SqlCommand cmd = new SqlCommand("CREATE DATABASE PrivyChat ON PRIMARY (NAME = PrivyChat_Data, FILENAME = '" + db + "')", conn))
+                    {
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                using (SqlConnection dbConn = new SqlConnection(ObterStringConexao()))
+                {
+                    dbConn.Open();
+                    string tableCmd = "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Users' and xtype='U') CREATE TABLE Users (Id INT PRIMARY KEY IDENTITY(1,1), Username NVARCHAR(50) NOT NULL UNIQUE, SaltedPasswordHash VARBINARY(MAX) NOT NULL, Salt VARBINARY(MAX) NOT NULL)";
+                    using (SqlCommand tCmd = new SqlCommand(tableCmd, dbConn))
+                    {
+                        tCmd.ExecuteNonQuery();
+                    }
+                }
+                Console.WriteLine("[Servidor] BD criado.");
             }
         }
     }
