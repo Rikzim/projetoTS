@@ -31,6 +31,9 @@ namespace Ficha3
         // Dados do usuário
         private string nomeUtilizador;         // Nome do usuário atual
 
+        // Controle de encerramento
+        private volatile bool _isClosing = false;
+
         // Construtor do form
         public frmChat(string nomeUtilizador)
         {
@@ -43,8 +46,6 @@ namespace Ficha3
 
             this.nomeUtilizador = nomeUtilizador;
             txtUsername.Text = nomeUtilizador;
-
-            CarregarImagemDoUtilizador();
         }
 
         // Evento de carregamento do form - inicia chat
@@ -56,7 +57,7 @@ namespace Ficha3
         // Loop principal de recebimento de mensagens
         private void ReceberMensagens()
         {
-            while (true)
+            while (!_isClosing)
             {
                 try
                 {
@@ -66,12 +67,32 @@ namespace Ficha3
                     if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
                     {
                         string texto = protocolo.GetStringFromData();
-                        ProcessarMensagemServidor(texto);
+                        if (!_isClosing)
+                        {
+                            BeginInvoke(new Action(() => ProcessarMensagemServidor(texto)));
+                        }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Invoke(new Action(() => MessageBox.Show("Erro: " + ex.Message)));
+                    // Sair do loop se ocorrer erro de conexão
+                    if (_isClosing) break;
+
+                    try
+                    {
+                        if (!IsDisposed && !Disposing)
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                MessageBox.Show("A conexão com o servidor foi perdida.", "Erro");
+                                Close();
+                            }));
+                        }
+                    }
+                    catch
+                    {
+                        // Ignorar erros de UI se o form já estiver fechado
+                    }
                     break;
                 }
             }
@@ -227,35 +248,6 @@ namespace Ficha3
             }
         }
 
-        // Carrega imagem do perfil do banco
-        private void CarregarImagemDoUtilizador()
-        {
-            string dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PrivyChat.mdf");
-            string connString = $@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbPath};Integrated Security=True";
-
-            using (var conn = new SqlConnection(connString))
-            {
-                conn.Open();
-                using (var cmd = new SqlCommand("SELECT ProfileImage FROM Users WHERE Username = @Username", conn))
-                {
-                    cmd.Parameters.AddWithValue("@Username", nomeUtilizador);
-                    var result = cmd.ExecuteScalar();
-
-                    if (result != DBNull.Value && result != null)
-                    {
-                        using (var ms = new MemoryStream((byte[])result))
-                        {
-                            pictureBox1.Image = Image.FromStream(ms);
-                        }
-                    }
-                    else
-                    {
-                        pictureBox1.Image = Properties.Resources.pfp;
-                    }
-                }
-            }
-        }
-
         // Processa chave AES recebida do servidor
         private void ProcessarChaveAESRecebida(string chaveCifrada)
         {
@@ -272,7 +264,7 @@ namespace Ficha3
                 aesCliente.IV = ivBytes;
                 chaveAESRecebida = true;
 
-                Invoke(new Action(() => MessageBox.Show("Chave AES configurada!", "Segurança")));
+                //Invoke(new Action(() => MessageBox.Show("Chave AES configurada!", "Segurança")));
             }
             catch (Exception ex)
             {
@@ -322,12 +314,25 @@ namespace Ficha3
         {
             try
             {
-                tReceber.Abort();
+                _isClosing = true;  // Flag para indicar que estamos a fechar
 
                 if (ns != null)
                 {
-                    EnviarMensagem(string.Empty, ProtocolSICmdType.EOT);
+                    try
+                    {
+                        EnviarMensagem(string.Empty, ProtocolSICmdType.EOT);
+                    }
+                    catch
+                    {
+                        // Ignoar erros ao enviar EOT, pois estamos a fechar
+                    }
                     ns.Close();
+                }
+
+                // Nao esperar indefinidamente pela thread de recebimento
+                if (tReceber != null && tReceber.IsAlive)
+                {
+                    tReceber.Join(1000); // Espera até 1 segundo para a thread terminar
                 }
 
                 aesCliente?.Dispose();
@@ -338,7 +343,65 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro: " + ex.Message);
+                MessageBox.Show("Erro ao fechar: " + ex.Message);
+            }
+        }
+
+        private void frmChat_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            try
+            {
+                // Stop receiving thread first
+                if (tReceber != null && tReceber.IsAlive)
+                {
+                    tReceber.Abort();
+                }
+
+                // Close network resources
+                if (ns != null)
+                {
+                    try
+                    {
+                        byte[] eotPacket = protocolo.Make(ProtocolSICmdType.EOT);
+                        ns.Write(eotPacket, 0, eotPacket.Length);
+                    }
+                    catch { } // Ignore errors during cleanup
+                    finally
+                    {
+                        ns.Close();
+                        ns.Dispose();
+                    }
+                }
+
+                // Dispose crypto objects
+                if (aesCliente != null)
+                {
+                    aesCliente.Dispose();
+                    aesCliente = null;
+                }
+
+                if (rsaSign != null)
+                {
+                    rsaSign.Dispose();
+                    rsaSign = null;
+                }
+
+                if (rsa != null)
+                {
+                    rsa.Dispose();
+                    rsa = null;
+                }
+
+                // Close client
+                if (client != null)
+                {
+                    client.Close();
+                    client = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao fechar: " + ex.Message);
             }
         }
     }
