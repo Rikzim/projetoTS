@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows.Forms;
 using System.Net.Sockets;
 using System.Text;
@@ -46,7 +46,6 @@ namespace Ficha3
                 ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
                 string resposta = protocolo.GetStringFromData();
 
-                client.Close();
                 return resposta == "LOGIN_OK";
             }
             catch (Exception ex)
@@ -72,7 +71,7 @@ namespace Ficha3
                 if (VerifyLogin(username, password))
                 {
                     MessageBox.Show("Login Realizado!");
-                    frmChat form1 = new frmChat(username);
+                    frmChat form1 = new frmChat(username, client, ns, protocolo);
                     form1.Show();
                     this.Hide();
                 }
