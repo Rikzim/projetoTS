@@ -31,6 +31,9 @@ namespace Ficha3
         // Dados do usuário
         private string nomeUtilizador;         // Nome do usuário atual
 
+        // Controle de encerramento
+        private volatile bool _isClosing = false;
+
         // Construtor do form
         public frmChat(string nomeUtilizador)
         {
@@ -56,7 +59,7 @@ namespace Ficha3
         // Loop principal de recebimento de mensagens
         private void ReceberMensagens()
         {
-            while (true)
+            while (!_isClosing)
             {
                 try
                 {
@@ -66,12 +69,32 @@ namespace Ficha3
                     if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
                     {
                         string texto = protocolo.GetStringFromData();
-                        ProcessarMensagemServidor(texto);
+                        if (!_isClosing)
+                        {
+                            BeginInvoke(new Action(() => ProcessarMensagemServidor(texto)));
+                        }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Invoke(new Action(() => MessageBox.Show("Erro: " + ex.Message)));
+                    // Sair do loop se ocorrer erro de conexão
+                    if (_isClosing) break;
+
+                    try
+                    {
+                        if (!IsDisposed && !Disposing)
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                MessageBox.Show("A conexão com o servidor foi perdida.", "Erro");
+                                Close();
+                            }));
+                        }
+                    }
+                    catch
+                    {
+                        // Ignorar erros de UI se o form já estiver fechado
+                    }
                     break;
                 }
             }
@@ -272,7 +295,7 @@ namespace Ficha3
                 aesCliente.IV = ivBytes;
                 chaveAESRecebida = true;
 
-                Invoke(new Action(() => MessageBox.Show("Chave AES configurada!", "Segurança")));
+                //Invoke(new Action(() => MessageBox.Show("Chave AES configurada!", "Segurança")));
             }
             catch (Exception ex)
             {
@@ -322,12 +345,25 @@ namespace Ficha3
         {
             try
             {
-                tReceber.Abort();
+                _isClosing = true;  // Flag para indicar que estamos a fechar
 
                 if (ns != null)
                 {
-                    EnviarMensagem(string.Empty, ProtocolSICmdType.EOT);
+                    try
+                    {
+                        EnviarMensagem(string.Empty, ProtocolSICmdType.EOT);
+                    }
+                    catch
+                    {
+                        // Ignoar erros ao enviar EOT, pois estamos a fechar
+                    }
                     ns.Close();
+                }
+
+                // Nao esperar indefinidamente pela thread de recebimento
+                if (tReceber != null && tReceber.IsAlive)
+                {
+                    tReceber.Join(1000); // Espera até 1 segundo para a thread terminar
                 }
 
                 aesCliente?.Dispose();
@@ -338,7 +374,7 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro: " + ex.Message);
+                MessageBox.Show("Erro ao fechar: " + ex.Message);
             }
         }
     }

@@ -103,7 +103,6 @@ namespace Ficha3
             {
                 if (VerifyLogin(username, password))
                 {
-                    MessageBox.Show("Login Realizado!");
                     frmChat form1 = new frmChat(username);
                     form1.Show();
                     this.Hide(); // Esconde o formulário de login
