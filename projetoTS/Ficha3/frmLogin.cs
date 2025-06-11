@@ -122,6 +122,7 @@ namespace Ficha3
         private void btnRegistar_Click(object sender, EventArgs e)
         {
             frmRegisto form3 = new frmRegisto();
+            form3.FormClosed += (s, args) => this.Close();
             form3.ShowDialog();
         }
     }

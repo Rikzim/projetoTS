@@ -123,19 +123,18 @@ namespace Ficha3
                 if (partes.Length == 3 && partes[2] == "VALID")
                 {
                     mensagemDecifrada = DecifrarMensagem(partes[0]);
-                    statusAssinatura = "✓";
                 }
                 else if (partes.Length == 2)
                 {
                     mensagemDecifrada = DecifrarMensagem(partes[0]);
-                    statusAssinatura = VerificarAssinatura(mensagemDecifrada, partes[1]) ? "✓" : "✗";
+                    statusAssinatura = VerificarAssinatura(mensagemDecifrada, partes[1]) ? "✓" : throw new Exception("Mensagem nao assinada!!");
                 }
                 else
                 {
                     mensagemDecifrada = DecifrarMensagem(dados);
                 }
 
-                Invoke(new Action(() => Log($"{statusAssinatura} {mensagemDecifrada}")));
+                Invoke(new Action(() => Log($"{mensagemDecifrada}")));
             }
             catch (Exception ex)
             {
@@ -184,7 +183,7 @@ namespace Ficha3
 
                 EnviarMensagem(dadosCompletos);
                 txtMensagem.Clear();
-                Log($"[Eu]: {texto} ✓");
+                Log($"[Eu]: {texto}");
             }
             catch (Exception ex)
             {
