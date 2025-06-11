@@ -46,8 +46,6 @@ namespace Ficha3
 
             this.nomeUtilizador = nomeUtilizador;
             txtUsername.Text = nomeUtilizador;
-
-            CarregarImagemDoUtilizador();
         }
 
         // Evento de carregamento do form - inicia chat
@@ -250,35 +248,6 @@ namespace Ficha3
             }
         }
 
-        // Carrega imagem do perfil do banco
-        private void CarregarImagemDoUtilizador()
-        {
-            string dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PrivyChat.mdf");
-            string connString = $@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbPath};Integrated Security=True";
-
-            using (var conn = new SqlConnection(connString))
-            {
-                conn.Open();
-                using (var cmd = new SqlCommand("SELECT ProfileImage FROM Users WHERE Username = @Username", conn))
-                {
-                    cmd.Parameters.AddWithValue("@Username", nomeUtilizador);
-                    var result = cmd.ExecuteScalar();
-
-                    if (result != DBNull.Value && result != null)
-                    {
-                        using (var ms = new MemoryStream((byte[])result))
-                        {
-                            pictureBox1.Image = Image.FromStream(ms);
-                        }
-                    }
-                    else
-                    {
-                        pictureBox1.Image = Properties.Resources.pfp;
-                    }
-                }
-            }
-        }
-
         // Processa chave AES recebida do servidor
         private void ProcessarChaveAESRecebida(string chaveCifrada)
         {
@@ -371,6 +340,64 @@ namespace Ficha3
                 rsa?.Dispose();
                 client?.Close();
                 Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao fechar: " + ex.Message);
+            }
+        }
+
+        private void frmChat_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            try
+            {
+                // Stop receiving thread first
+                if (tReceber != null && tReceber.IsAlive)
+                {
+                    tReceber.Abort();
+                }
+
+                // Close network resources
+                if (ns != null)
+                {
+                    try
+                    {
+                        byte[] eotPacket = protocolo.Make(ProtocolSICmdType.EOT);
+                        ns.Write(eotPacket, 0, eotPacket.Length);
+                    }
+                    catch { } // Ignore errors during cleanup
+                    finally
+                    {
+                        ns.Close();
+                        ns.Dispose();
+                    }
+                }
+
+                // Dispose crypto objects
+                if (aesCliente != null)
+                {
+                    aesCliente.Dispose();
+                    aesCliente = null;
+                }
+
+                if (rsaSign != null)
+                {
+                    rsaSign.Dispose();
+                    rsaSign = null;
+                }
+
+                if (rsa != null)
+                {
+                    rsa.Dispose();
+                    rsa = null;
+                }
+
+                // Close client
+                if (client != null)
+                {
+                    client.Close();
+                    client = null;
+                }
             }
             catch (Exception ex)
             {
