@@ -144,7 +144,7 @@ namespace Ficha3
                 {
                     string decrypted = DecryptAES(parts[0]);
                     bool valid = VerifySignature(decrypted, parts[1]);
-                    return (valid ? "✓ " : "✗ ") + decrypted;
+                    return (valid ? "V" : "X") + decrypted;
                 }
                 return msg;
             }
@@ -169,7 +169,7 @@ namespace Ficha3
             string fullMsg = encrypted + "||" + signature;
             Send(ProtocolSICmdType.DATA, fullMsg);
             txtMensagem.Clear();
-            Log($"[Eu]: {plain} ✓");
+            Log($"[Eu]: {plain}");
         }
 
         private void sair_Click(object sender, EventArgs e)

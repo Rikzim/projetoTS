@@ -17,15 +17,20 @@ namespace Servidor
         static Dictionary<string, string> chavesPublicasAES = new Dictionary<string, string>();
         static Dictionary<string, string> chavesPublicasAssinatura = new Dictionary<string, string>();
         static Dictionary<string, Aes> chavesAES = new Dictionary<string, Aes>();
-        static object lockObj = new object();
+        
+        static object lockObj = new object(); // Lock para acesso às coleções
+        static object lockLog = new object(); // Lock para o arquivo de log
+        
+        static string caminhoLog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log.txt");
 
         static void Main(string[] args)
         {
             InicializarBD();
+            InicializarLog();
 
             TcpListener server = new TcpListener(IPAddress.Any, 12345);
             server.Start();
-            Console.WriteLine("Servidor iniciado...");
+            Log("[SERVIDOR] Servidor iniciado na porta 12345");
 
             while (true)
             {
@@ -57,13 +62,17 @@ namespace Servidor
                         {
                             username = ProcessarLogin(msg, ns, protocolo);
                             if (!string.IsNullOrEmpty(username))
-                                Console.WriteLine("Utilizador " + username + " fez login.");
+                            {
+                                Log("[INFO] Utilizador " + username + " fez login.");
+                            }
                         }
                         else if (msg.StartsWith("REGISTER|"))
                         {
                             username = ProcessarRegistro(msg, ns, protocolo);
                             if (!string.IsNullOrEmpty(username))
-                                Console.WriteLine("Utilizador " + username + " registado.");
+                            {
+                                Log("[INFO] Utilizador " + username + " registado.");
+                            }
                         }
                         else if (msg.StartsWith("CHAVE_PUBLICA|"))
                         {
@@ -93,7 +102,7 @@ namespace Servidor
                                     {
                                         clientes[parts[1]] = client;
                                     }
-                                    Console.WriteLine("Chave pública de assinatura de " + parts[1] + " recebida.");
+                                    Log("[Servidor] Chave pública de assinatura de " + parts[1] + " recebida.");
                                     continue;
                                 }
                             }
@@ -106,15 +115,15 @@ namespace Servidor
                             {
                                 string decrypted = DecifrarMensagem(username, parts[0]);
                                 bool valid = VerificarAssinatura(username, decrypted, parts[1]);
-                                string label = "[" + username + "]: " + decrypted + (valid ? " ✓" : " ✗");
-                                Console.WriteLine(label);
+                                string label = "[" + username + "]: " + decrypted;
+                                Log(label + " " + (valid ? "V" : "X"));
                                 EnviarParaTodos(label, username);
                             }
                         }
                     }
                     else if (cmd == ProtocolSICmdType.EOT)
                     {
-                        Console.WriteLine("Utilizador " + username + " desconectado.");
+                        Log("[INFO] Utilizador " + username + " desconectado.");
                         break;
                     }
                 }
@@ -122,11 +131,11 @@ namespace Servidor
             catch (IOException ex)
             {
                 if (!string.IsNullOrEmpty(username))
-                    Console.WriteLine("[INFO] Cliente " + username + " desconectou-se (" + ex.Message + ").");
+                    Log("[INFO] Utilizador " + username + " desconectou-se (" + ex.Message + ").");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[ERRO] " + ex.Message);
+                Log("[ERRO] " + ex.Message);
             }
             finally
             {
@@ -160,7 +169,10 @@ namespace Servidor
                         {
                             par.Value.GetStream().Write(dados, 0, dados.Length);
                         }
-                        catch { }
+                        catch 
+                        { 
+                            throw new Exception("Erro ao enviar mensagem para " + par.Key);
+                        }
                     }
                 }
             }
@@ -193,7 +205,7 @@ namespace Servidor
                 ns.Write(packet, 0, packet.Length);
 
                 rsaCliente.Dispose();
-                Console.WriteLine($"[Servidor] Chave AES enviada para {username}");
+                Log("[Servidor] Chave AES enviada para " + username);
             }
         }
 
@@ -222,6 +234,7 @@ namespace Servidor
                 {
                     if (!chavesPublicasAssinatura.ContainsKey(username))
                         return false;
+
                     RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
                     rsa.FromXmlString(chavesPublicasAssinatura[username]);
                     byte[] data = Encoding.UTF8.GetBytes(mensagem);
@@ -398,7 +411,48 @@ namespace Servidor
                         tCmd.ExecuteNonQuery();
                     }
                 }
-                Console.WriteLine("[Servidor] BD criado.");
+                Log("[Servidor] BD criado.");
+            }
+        }
+
+        // Sistema de log unificado
+        static void InicializarLog()
+        {
+            try
+            {
+                // Cria o arquivo de log se não existir
+                if (!File.Exists(caminhoLog))
+                {
+                    File.Create(caminhoLog).Dispose();
+                }
+
+                Log("=== SISTEMA DE LOG INICIALIZADO ===");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERRO] Não foi possível inicializar o sistema de log: {ex.Message}");
+            }
+        }
+
+        static void Log(string mensagem)
+        {
+            try
+            {
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                string linhaCompleta = $"[{timestamp}] {mensagem}";
+
+                // Escreve no console
+                Console.WriteLine(linhaCompleta);
+
+                // Escreve no arquivo de log
+                lock (lockLog)
+                {
+                    File.AppendAllText(caminhoLog, linhaCompleta + Environment.NewLine, Encoding.UTF8);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERRO] Falha ao escrever no log: {ex.Message}");
             }
         }
     }
