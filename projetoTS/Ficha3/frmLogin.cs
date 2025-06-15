@@ -15,25 +15,28 @@ namespace Ficha3
 {
     public partial class frmLogin: Form
     {
-        private const int NUMBER_OF_ITERATIONS = 1000;
+        // criacao dos objetos de conexao e protocolo
+        private TcpClient client;
+        private NetworkStream ns;
+        private ProtocolSI protocolo;
 
         public frmLogin()
         {
             InitializeComponent();
+            protocolo = new ProtocolSI(); // inicializa o protocolo
         }
 
-        private void pictureBox1_Click(object sender, EventArgs e)
+        private void ConectarServidor() // funcao para conectar ao servidor
         {
 
         }
 
-        private bool VerifyLogin(string username, string password)
+        private bool VerifyLogin(string username, string password) // função para verificar o login
         {
             SqlConnection conn = null;
             try
             {
-                // Configurar ligação à Base de Dados
-                conn = new SqlConnection();
+                ConectarServidor();// conecta ao servidor
 
                 string dbFileName = "PrivyChat.mdf"; // ou "Data\\PrivyChat.mdf" se estiver em uma subpasta
                 string dbFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dbFileName);
@@ -93,7 +96,7 @@ namespace Ficha3
             return rfc2898.GetBytes(32);
         }
 
-        private void btnEntrar_Click(object sender, EventArgs e)
+        private void btnEntrar_Click(object sender, EventArgs e) // função para entrar no chat após verificar o login
         {
             // Guarda a password e o salt gerados
             string password = txtPassword.Text;
@@ -104,7 +107,7 @@ namespace Ficha3
                 if (VerifyLogin(username, password))
                 {
                     MessageBox.Show("Login Realizado!");
-                    frmChat form1 = new frmChat(username);
+                    frmChat form1 = new frmChat(username, client, ns, protocolo); // cria o formulário de chat usando o mesmo cliente e protocolo
                     form1.Show();
                     this.Hide(); // Esconde o formulário de login
                 }
@@ -119,7 +122,7 @@ namespace Ficha3
             }
         }
 
-        private void btnRegistar_Click(object sender, EventArgs e)
+        private void btnRegistar_Click(object sender, EventArgs e) // função para abrir o formulário de registro
         {
             frmRegisto form3 = new frmRegisto();
             form3.FormClosed += (s, args) => this.Close();

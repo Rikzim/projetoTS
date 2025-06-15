@@ -15,17 +15,17 @@ namespace Ficha3
 {
     public partial class frmRegisto: Form
     {
-        private byte[] profileImageBytes;
-        //
-        private const int SALTSIZE = 8;
-        private const int NUMBER_OF_ITERATIONS = 1000;
+        // criacao dos objetos de conexao e protocolo
+        private TcpClient client;
+        private NetworkStream ns;
+        private ProtocolSI protocolo;
 
         public frmRegisto()
         {
             InitializeComponent();
         }
 
-        private void pictureBox1_Click(object sender, EventArgs e)
+        private void ConectarServidor()// funcao para conectar ao servidor
         {
             try
             {
@@ -53,15 +53,9 @@ namespace Ficha3
             byte[] saltedPasswordHash = GenerateSaltedHash(password, salt);
             try
             {
-                if (string.IsNullOrEmpty(txtUsername.Text) || string.IsNullOrEmpty(txtPassword.Text))
-                    throw new Exception("Por favor, preencha todos os campos obrigatórios.");
-
-                if (profileImageBytes == null)
-                    throw new Exception("Por favor, selecione uma imagem de perfil.");
-
-                Register(txtUsername.Text, saltedPasswordHash, salt, profileImageBytes);
-                MessageBox.Show("Usuário registrado com sucesso!", "Sucesso", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                this.Close(); // Fecha o formulário após o registro
+                Register(txtUsername.Text, txtPassword.Text);
+                MessageBox.Show("Utilizador registrado com sucesso!");
+                this.Close();
             }
             catch (Exception ex)
             {
@@ -69,7 +63,7 @@ namespace Ficha3
             }
         }
 
-        private void Register(string username, byte[] saltedPasswordHash, byte[] salt, byte[] profileImageBytes)
+        private void Register(string username, string password) // função para registrar o utilizador
         {
 
             SqlConnection conn = null;
@@ -82,14 +76,14 @@ namespace Ficha3
 
                 conn.ConnectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True");
 
-                // Abrir ligação à Base de Dados
-                conn.Open();
+                // envia a mensagem de registro
+                string registerData = $"REGISTER|{username}|{password}";
+                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, registerData);
+                ns.Write(dados, 0, dados.Length);
 
-                // Declaração dos parâmetros do comando SQL
-                SqlParameter paramUsername = new SqlParameter("@username", username);
-                SqlParameter paramPassHash = new SqlParameter("@saltedPasswordHash", saltedPasswordHash);
-                SqlParameter paramSalt = new SqlParameter("@salt", salt);
-                SqlParameter paramProfileImage = new SqlParameter("@profileImage", profileImageBytes);
+                // recebe a resposta
+                ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                string resposta = protocolo.GetStringFromData();
 
                 // Declaração do comando SQL
                 String sql = "INSERT INTO Users (Username, SaltedPasswordHash, Salt, ProfileImage) VALUES (@username,@saltedPasswordHash,@salt,@profileImage)";

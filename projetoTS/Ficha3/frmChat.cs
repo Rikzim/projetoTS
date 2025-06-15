@@ -16,23 +16,26 @@ namespace Ficha3
 {
     public partial class frmChat : Form
     {
-        // Objetos de rede
-        private TcpClient client;               // Cliente TCP para conexão com servidor
-        private NetworkStream ns;               // Stream de rede para comunicação
-        private ProtocolSI protocolo;           // Protocolo de comunicação 
-        private Thread tReceber;                // Thread para receber mensagens
+        // criacao dos objetos de conexao e protocolo
+        private TcpClient client;
+        private NetworkStream ns;
+        private ProtocolSI protocolo;
+        private Thread tReceber;
 
-        // Objetos de criptografia
-        private RSACryptoServiceProvider rsa;    // RSA para troca de chaves AES
-        private RSACryptoServiceProvider rsaSign;// RSA para assinaturas digitais
-        private Aes aesCliente;                 // AES para cifrar/decifrar mensagens
-        private bool chaveAESRecebida = false;  // Flag indicando se a chave AES foi recebida
 
-        // Dados do usuário
-        private string nomeUtilizador;         // Nome do usuário atual
+        // criacao dos objetos de criptografia
+        private RSACryptoServiceProvider rsaPublica;// Chave publica para enviar ao servidor
+        private RSACryptoServiceProvider rsaSign;// Para assinar mensagens
+        private Aes aesCliente;// Chave AES recebida do servidor para desencriptar e encriptar mensagens
+        private bool chaveAESRecebida = false;
 
-        // Construtor do form
-        public frmChat(string nomeUtilizador)
+        // dados do utilizador
+        private string nomeUtilizador;
+
+        // controle de encerramento
+        private volatile bool _isClosing = false;
+
+        public frmChat(string nomeUtilizador, TcpClient client, NetworkStream ns, ProtocolSI protocolo)
         {
             InitializeComponent();
 
@@ -44,97 +47,166 @@ namespace Ficha3
             this.nomeUtilizador = nomeUtilizador;
             txtUsername.Text = nomeUtilizador;
 
-            CarregarImagemDoUtilizador();
-        }
-
-        // Evento de carregamento do form - inicia chat
-        private void frmChat_Load(object sender, EventArgs e)
-        {
-            IniciarChat();
-        }
-
-        // Loop principal de recebimento de mensagens
-        private void ReceberMensagens()
-        {
-            while (true)
+            // Inicializa conexões e protocolo
+            this.client = client;
+            this.ns = ns;
+            this.protocolo = protocolo;
+            rsaPublica = new RSACryptoServiceProvider(2048);
+            rsaSign = new RSACryptoServiceProvider(2048);
+            try
             {
-                try
-                {
-                    // Lê dados do servidor
-                    ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
-
-                    if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
-                    {
-                        string texto = protocolo.GetStringFromData();
-                        ProcessarMensagemServidor(texto);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Invoke(new Action(() => MessageBox.Show("Erro: " + ex.Message)));
-                    break;
-                }
+                IniciarChat(); // Inicia o processo de chat
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao iniciar o chat: " + ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
             }
         }
 
-        // Processa mensagens do servidor
-        private void ProcessarMensagemServidor(string texto)
+        private void IniciarChat() // funcao para iniciar o chat corretamente
         {
-            // Etapa de autenticação e troca de chaves
-            if (texto.Contains("utilizador"))
+            // Envia chave publica para o servidor
+            string chavePubXml = rsaPublica.ToXmlString(false);
+            Send(ProtocolSICmdType.DATA, $"CHAVE_PUBLICA|{nomeUtilizador}|{chavePubXml}");
+
+            // Espera resposta do servidor para confimar que a chave pública foi recebida
+            ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+            string resp = protocolo.GetStringFromData();
+            if (!resp.Contains("chave assinatura"))
+                throw new Exception("Resposta inesperada do servidor ao enviar chave pública");
+
+            // Envia chave de assinatura para o servidor
+            string chaveAssinaturaXml = rsaSign.ToXmlString(false);
+            Send(ProtocolSICmdType.DATA, $"CHAVE_PUBLICA|{nomeUtilizador}|{chaveAssinaturaXml}");
+
+            // Espera resposta do servidor para guardar a chave AES recebida do servidor
+            ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+            resp = protocolo.GetStringFromData();
+            if (resp.Contains("|"))
             {
-                EnviarMensagem(txtUsername.Text.Trim());
-            }
-            else if (texto.Contains("chave pública"))
-            {
-                EnviarMensagem(rsa.ToXmlString(false));
-            }
-            else if (texto.Contains("chave assinatura"))
-            {
-                EnviarMensagem(rsaSign.ToXmlString(false));
-            }
-            else if (texto.Contains("|") && !chaveAESRecebida)
-            {
-                ProcessarChaveAESRecebida(texto);
+                string[] parts = resp.Split('|');// Divide a resposta em partes
+                byte[] key = rsaPublica.Decrypt(Convert.FromBase64String(parts[0]), false);
+                byte[] iv = rsaPublica.Decrypt(Convert.FromBase64String(parts[1]), false);
+                aesCliente = Aes.Create();
+                aesCliente.Key = key;
+                aesCliente.IV = iv;
+                chaveAESRecebida = true;
             }
             else
             {
                 ProcessarMensagemRecebida(texto);
             }
+            // Inicia a thread para receber mensagens
+            tReceber = new Thread(ReceiveLoop);
+            tReceber.IsBackground = true;
+            tReceber.Start();
+            Log("Conectado ao servidor.");
         }
 
-        // Envia mensagem para o servidor
-        private void EnviarMensagem(string msg, ProtocolSICmdType tipo = ProtocolSICmdType.DATA)
+        void Send(ProtocolSICmdType type, string msg) // funcao para enviar mensagens ao servidor
         {
             byte[] dados = protocolo.Make(tipo, msg);
             ns.Write(dados, 0, dados.Length);
         }
 
-        // Processa mensagens do chat
-        private void ProcessarMensagemRecebida(string dados)
+        private void ReceiveLoop()// funcao para receber mensagens do servidor
         {
             try
             {
-                string[] partes = dados.Split(new[] { "||" }, StringSplitOptions.None);
-                string mensagemDecifrada;
-                string statusAssinatura = "";
+                while (!_isClosing) // Continua recebendo ate o formulario fechar
+                {
+                    int bytesRead = ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                    if (bytesRead == 0) break;
+                    if (protocolo.GetCmdType() == ProtocolSICmdType.DATA)
+                    {
+                        string msg = protocolo.GetStringFromData();
+                        string show = ProcessReceivedMessage(msg);// processa a mensagem recebida, verifica assinatura e descriptografa
+                        if (!string.IsNullOrEmpty(show))
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                if (rtbChat != null)
+                                    rtbChat.AppendText(show + Environment.NewLine);// Adiciona a mensagem ao chat
+                            }));
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                if (!_isClosing)
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        MessageBox.Show("Desconectado do servidor.");
+                        Close();
+                    }));
+                }
+            }
+        }
 
-                // Verifica formato da mensagem
-                if (partes.Length == 3 && partes[2] == "VALID")
+        string ProcessReceivedMessage(string msg)// funcao para verificar a assinatura e descriptografar a mensagem recebida
+        {
+            try
+            {
+                string[] parts = msg.Split(new[] { "||" }, StringSplitOptions.None);// divide a mensagem em partes usando || como separador
+                if (parts.Length == 2 && chaveAESRecebida)
                 {
                     mensagemDecifrada = DecifrarMensagem(partes[0]);
                 }
-                else if (partes.Length == 2)
+                return msg;
+            }
+            catch
+            {
+                return msg;
+            }
+        }
+
+        private void enviar_Click(object sender, EventArgs e)// funcao para enviar mensagens
+        {
+            if (!chaveAESRecebida)
+            {
+                MessageBox.Show("Chave AES ainda não recebida.");
+                return;
+            }
+            string msg = txtMensagem.Text.Trim();
+            if (msg == "") return;
+
+            string encrypted = EncryptAES(msg);
+            string signature = SignRSA(msg);
+            string fullMsg = encrypted + "||" + signature; // manda a mensagem seperada em 2 partes, a msg cifrada e a assinatura
+            Send(ProtocolSICmdType.DATA, fullMsg);
+            txtMensagem.Clear();
+            Log($"[Eu]: {msg} ✓");
+        }
+
+        private void sair_Click(object sender, EventArgs e) // funcao para fechar o chat
+        {
+            try
+            {
+                _isClosing = true;
+                try
                 {
-                    mensagemDecifrada = DecifrarMensagem(partes[0]);
-                    statusAssinatura = VerificarAssinatura(mensagemDecifrada, partes[1]) ? "✓" : throw new Exception("Mensagem nao assinada!!");
+                    Send(ProtocolSICmdType.EOT, "");// manda o protoloco de encerramento para o servidor
                 }
                 else
                 {
                     mensagemDecifrada = DecifrarMensagem(dados);
                 }
 
-                Invoke(new Action(() => Log($"{mensagemDecifrada}")));
+                }
+                if (tReceber != null && tReceber.IsAlive) // espera a thread de receber mensagens terminar
+                {
+                    tReceber.Join(1000);
+                }
+                // Libera recursos
+                aesCliente?.Dispose();
+                rsaSign?.Dispose();
+                rsaPublica?.Dispose();
+                ns?.Close();
+                client?.Close();
+                Close();
             }
             catch (Exception ex)
             {
@@ -142,203 +214,45 @@ namespace Ficha3
             }
         }
 
-        // Verifica assinatura digital
-        private bool VerificarAssinatura(string mensagem, string assinaturaBase64)
+        // funcoes para criptografia e assinatura
+        string EncryptAES(string text) // funcao para encriptar mensagens usando a chave aes enviada pelo servidor
         {
             try
             {
-                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
-                byte[] assinatura = Convert.FromBase64String(assinaturaBase64);
-                return rsaSign.VerifyData(dados, CryptoConfig.MapNameToOID("SHA256"), assinatura);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        // Adiciona mensagem ao chat
-        private void Log(string mensagem)
-        {
-            rtbChat.AppendText(mensagem + Environment.NewLine);
-        }
-
-        // Evento de clique no botão enviar
-        private void enviar_Click(object sender, EventArgs e)
-        {
-            string texto = txtMensagem.Text.Trim();
-            if (string.IsNullOrEmpty(texto)) return;
-
-            if (!chaveAESRecebida)
-            {
-                MessageBox.Show("Aguarde a troca de chaves.", "Aviso");
-                return;
-            }
-
-            try
-            {
-                string mensagemCifrada = CifrarMensagem(texto);
-                string assinatura = AssinarMensagem(texto);
-                string dadosCompletos = $"{mensagemCifrada}||{assinatura}";
-
-                EnviarMensagem(dadosCompletos);
-                txtMensagem.Clear();
-                Log($"[Eu]: {texto}");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Erro: " + ex.Message, "Erro");
-            }
-        }
-
-        // Assina mensagem com RSA
-        private string AssinarMensagem(string mensagem)
-        {
-            try
-            {
-                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
-                byte[] assinatura = rsaSign.SignData(dados, CryptoConfig.MapNameToOID("SHA256"));
-                return Convert.ToBase64String(assinatura);
-            }
-            catch (Exception ex)
-            {
-                throw new Exception("Erro ao assinar: " + ex.Message);
-            }
-        }
-
-        // Inicia conexão com servidor
-        private void IniciarChat()
-        {
-            try
-            {
-                client = new TcpClient("127.0.0.1", 12345);
-                ns = client.GetStream();
-
-                tReceber = new Thread(ReceberMensagens) { IsBackground = true };
-                tReceber.Start();
-
-                EnviarMensagem(string.Empty, ProtocolSICmdType.USER_OPTION_1);
-                Log("Conectado ao servidor.");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Erro: " + ex.Message);
-            }
-        }
-
-        // Carrega imagem do perfil do banco
-        private void CarregarImagemDoUtilizador()
-        {
-            string dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PrivyChat.mdf");
-            string connString = $@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbPath};Integrated Security=True";
-
-            using (var conn = new SqlConnection(connString))
-            {
-                conn.Open();
-                using (var cmd = new SqlCommand("SELECT ProfileImage FROM Users WHERE Username = @Username", conn))
-                {
-                    cmd.Parameters.AddWithValue("@Username", nomeUtilizador);
-                    var result = cmd.ExecuteScalar();
-
-                    if (result != DBNull.Value && result != null)
-                    {
-                        using (var ms = new MemoryStream((byte[])result))
-                        {
-                            pictureBox1.Image = Image.FromStream(ms);
-                        }
-                    }
-                    else
-                    {
-                        pictureBox1.Image = Properties.Resources.pfp;
-                    }
-                }
-            }
-        }
-
-        // Processa chave AES recebida do servidor
-        private void ProcessarChaveAESRecebida(string chaveCifrada)
-        {
-            try
-            {
-                string[] partes = chaveCifrada.Split('|');
-                if (partes.Length != 2) return;
-
-                byte[] chaveAESBytes = rsa.Decrypt(Convert.FromBase64String(partes[0]), false);
-                byte[] ivBytes = rsa.Decrypt(Convert.FromBase64String(partes[1]), false);
-
-                aesCliente = Aes.Create();
-                aesCliente.Key = chaveAESBytes;
-                aesCliente.IV = ivBytes;
-                chaveAESRecebida = true;
-
-                Invoke(new Action(() => MessageBox.Show("Chave AES configurada!", "Segurança")));
-            }
-            catch (Exception ex)
-            {
-                Invoke(new Action(() => MessageBox.Show("Erro: " + ex.Message)));
-            }
-        }
-
-        // Cifra mensagem com AES
-        private string CifrarMensagem(string mensagem)
-        {
-            if (!chaveAESRecebida || aesCliente == null)
-                throw new Exception("Chave AES não pronta");
-
-            using (var ms = new MemoryStream())
-            using (var cs = new CryptoStream(ms, aesCliente.CreateEncryptor(), CryptoStreamMode.Write))
-            {
-                byte[] dados = Encoding.UTF8.GetBytes(mensagem);
-                cs.Write(dados, 0, dados.Length);
-                cs.FlushFinalBlock();
+                byte[] data = Encoding.UTF8.GetBytes(text);
+                cs.Write(data, 0, data.Length);
+                cs.FlushFinalBlock();// garante que todos os dados sejam escritos corretamente
                 return Convert.ToBase64String(ms.ToArray());
             }
         }
 
-        // Decifra mensagem com AES
-        private string DecifrarMensagem(string mensagemCifrada)
+        string DecryptAES(string msgCifrada) // funcao para desencriptar mensagens usando a chave aes enviada pelo servidor
         {
-            if (!chaveAESRecebida || aesCliente == null)
-                return mensagemCifrada;
-
-            try
+            using (MemoryStream ms = new MemoryStream(Convert.FromBase64String(msgCifrada)))
+            using (CryptoStream cs = new CryptoStream(ms, aesCliente.CreateDecryptor(), CryptoStreamMode.Read))
+            using (StreamReader sr = new StreamReader(cs))
             {
-                using (var ms = new MemoryStream(Convert.FromBase64String(mensagemCifrada)))
-                using (var cs = new CryptoStream(ms, aesCliente.CreateDecryptor(), CryptoStreamMode.Read))
-                using (var sr = new StreamReader(cs))
-                {
-                    return sr.ReadToEnd();
-                }
-            }
-            catch
-            {
-                return mensagemCifrada;
+                return sr.ReadToEnd();// le todos os dados desencriptados e retorna como string
             }
         }
 
-        // Finaliza conexão e limpa recursos
-        private void sair_Click(object sender, EventArgs e)
+        string SignRSA(string text)// funcao para assinar mensagens usando a chave de assinatura
         {
             try
             {
                 tReceber.Abort();
 
-                if (ns != null)
-                {
-                    EnviarMensagem(string.Empty, ProtocolSICmdType.EOT);
-                    ns.Close();
-                }
+        bool VerifySignature(string text, string sig64) // funcao para verificar a assinatura das mensagens
+        {
+            byte[] data = Encoding.UTF8.GetBytes(text);
+            byte[] sig = Convert.FromBase64String(sig64);
+            return rsaSign.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), sig);
+        }
 
-                aesCliente?.Dispose();
-                rsaSign?.Dispose();
-                rsa?.Dispose();
-                client?.Close();
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Erro: " + ex.Message);
-            }
+        private void Log(string mensagem) // funcao para adicionar mensagens ao chat
+        {
+            if (rtbChat != null)
+                rtbChat.AppendText(mensagem + Environment.NewLine);
         }
     }
 }
