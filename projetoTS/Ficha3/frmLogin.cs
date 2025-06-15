@@ -61,30 +61,28 @@ namespace Ficha3
         {
             string password = txtPassword.Text;
             string username = txtUsername.Text;
-
-            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-            {
-                MessageBox.Show("Preencha todos os campos!");
-                return;
-            }
-
             try
             {
+                if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                {
+                    throw new Exception("Preencha todos os campos!"); // lança uma exceção se os campos estiverem vazios
+                }
+
                 if (VerifyLogin(username, password))
                 {
-                    MessageBox.Show("Login Realizado!");
+                    MessageBox.Show("Login Realizado", "Sucesso!", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     frmChat form1 = new frmChat(username, client, ns, protocolo); // cria o formulário de chat usando o mesmo cliente e protocolo
                     form1.Show();
                     this.Hide();
                 }
                 else
                 {
-                    MessageBox.Show("Username ou password inválido.");
+                    throw new Exception("Username ou password inválido."); // lança uma exceção se o login falhar
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro ao entrar: " + ex.Message);
+                MessageBox.Show("Erro ao entrar: " + ex.Message, "Erro !", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

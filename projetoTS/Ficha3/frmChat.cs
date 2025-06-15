@@ -238,6 +238,7 @@ namespace Ficha3
         private void Log(string mensagem) // funcao para adicionar mensagens ao chat
         {
             if (rtbChat != null)
+            {
                 rtbChat.AppendText(mensagem + Environment.NewLine);
             }
         }
