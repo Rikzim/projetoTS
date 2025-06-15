@@ -1,19 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Data.SqlClient;
-using System.Drawing;
-using System.Linq;
-using System.Security.Cryptography;
+using System;
+using System.Net.Sockets;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.IO;
+using EI.SI;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
 
 namespace Ficha3
 {
-    public partial class frmLogin: Form
+    public partial class frmLogin : Form
     {
         // criacao dos objetos de conexao e protocolo
         private TcpClient client;
@@ -28,80 +22,52 @@ namespace Ficha3
 
         private void ConectarServidor() // funcao para conectar ao servidor
         {
-
+            try
+            {
+                client = new TcpClient("127.0.0.1", 12345);
+                ns = client.GetStream();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao conectar ao servidor: " + ex.Message);
+            }
         }
 
         private bool VerifyLogin(string username, string password) // função para verificar o login
         {
-            SqlConnection conn = null;
             try
             {
                 ConectarServidor();// conecta ao servidor
 
-                string dbFileName = "PrivyChat.mdf"; // ou "Data\\PrivyChat.mdf" se estiver em uma subpasta
-                string dbFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dbFileName);
+                // Envia comando de login
+                string loginData = $"LOGIN|{username}|{password}";
+                byte[] dados = protocolo.Make(ProtocolSICmdType.DATA, loginData);
+                ns.Write(dados, 0, dados.Length);
 
-                conn.ConnectionString = String.Format($@"Data Source=(LocalDB)\MSSQLLocalDB;AttachDbFilename={dbFilePath};Integrated Security=True");
+                // Recebe resposta
+                ns.Read(protocolo.Buffer, 0, protocolo.Buffer.Length);
+                string resposta = protocolo.GetStringFromData();
 
-                // Abrir ligação à Base de Dados
-                conn.Open();
-
-                // Declaração do comando SQL
-                String sql = "SELECT * FROM Users WHERE Username = @username";
-                SqlCommand cmd = new SqlCommand();
-                cmd.CommandText = sql;
-
-                // Declaração dos parâmetros do comando SQL
-                SqlParameter param = new SqlParameter("@username", username);
-
-                // Introduzir valor ao parâmentro registado no comando SQL
-                cmd.Parameters.Add(param);
-
-                // Associar ligação à Base de Dados ao comando a ser executado
-                cmd.Connection = conn;
-
-                // Executar comando SQL
-                SqlDataReader reader = cmd.ExecuteReader();
-
-                if (!reader.HasRows)
-                {
-                    throw new Exception("Error while trying to access an user");
-                }
-
-                // Ler resultado da pesquisa
-                reader.Read();
-
-                // Obter Hash (password + salt)
-                byte[] saltedPasswordHashStored = (byte[])reader["SaltedPasswordHash"];
-
-                // Obter salt
-                byte[] saltStored = (byte[])reader["Salt"];
-
-                conn.Close();
-
-                //TODO: verificar se a password na base de dados
-                byte[] saltedPasswordHash = GenerateSaltedHash(password, saltStored);
-                // Comparar o hash da password introduzida com o hash da password guardada na base de dados
-                return saltedPasswordHash.SequenceEqual(saltedPasswordHashStored);
+                return resposta == "LOGIN_OK";
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                MessageBox.Show("An error occurred: " + e.Message);
+                MessageBox.Show("Erro ao verificar login: " + ex.Message);
                 return false;
             }
-        }
-        private static byte[] GenerateSaltedHash(string plainText, byte[] salt)
-        {
-            Rfc2898DeriveBytes rfc2898 = new Rfc2898DeriveBytes(plainText, salt, NUMBER_OF_ITERATIONS);
-            return rfc2898.GetBytes(32);
         }
 
         private void btnEntrar_Click(object sender, EventArgs e) // função para entrar no chat após verificar o login
         {
-            // Guarda a password e o salt gerados
             string password = txtPassword.Text;
             string username = txtUsername.Text;
-            // Verifica se o utilizador existe na Base de Dados
+
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("Preencha todos os campos!");
+                return;
+            }
+
             try
             {
                 if (VerifyLogin(username, password))
@@ -109,7 +75,7 @@ namespace Ficha3
                     MessageBox.Show("Login Realizado!");
                     frmChat form1 = new frmChat(username, client, ns, protocolo); // cria o formulário de chat usando o mesmo cliente e protocolo
                     form1.Show();
-                    this.Hide(); // Esconde o formulário de login
+                    this.Hide();
                 }
                 else
                 {
@@ -118,7 +84,7 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Ocorreu um erro ao entrar: " + ex.Message);
+                MessageBox.Show("Erro ao entrar: " + ex.Message);
             }
         }
 

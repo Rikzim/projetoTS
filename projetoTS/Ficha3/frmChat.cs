@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Data.SqlClient;
-using System.Drawing;
+using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -38,12 +33,6 @@ namespace Ficha3
         public frmChat(string nomeUtilizador, TcpClient client, NetworkStream ns, ProtocolSI protocolo)
         {
             InitializeComponent();
-
-            // Inicializa objetos
-            protocolo = new ProtocolSI();
-            rsa = new RSACryptoServiceProvider(2048);
-            rsaSign = new RSACryptoServiceProvider(2048);
-
             this.nomeUtilizador = nomeUtilizador;
             txtUsername.Text = nomeUtilizador;
 
@@ -95,7 +84,7 @@ namespace Ficha3
             }
             else
             {
-                ProcessarMensagemRecebida(texto);
+                throw new Exception("Chave AES não recebida do servidor.");
             }
             // Inicia a thread para receber mensagens
             tReceber = new Thread(ReceiveLoop);
@@ -106,8 +95,8 @@ namespace Ficha3
 
         void Send(ProtocolSICmdType type, string msg) // funcao para enviar mensagens ao servidor
         {
-            byte[] dados = protocolo.Make(tipo, msg);
-            ns.Write(dados, 0, dados.Length);
+            byte[] pacote = protocolo.Make(type, msg);
+            ns.Write(pacote, 0, pacote.Length);
         }
 
         private void ReceiveLoop()// funcao para receber mensagens do servidor
@@ -145,7 +134,6 @@ namespace Ficha3
                 }
             }
         }
-
         string ProcessReceivedMessage(string msg)// funcao para verificar a assinatura e descriptografar a mensagem recebida
         {
             try
@@ -153,7 +141,9 @@ namespace Ficha3
                 string[] parts = msg.Split(new[] { "||" }, StringSplitOptions.None);// divide a mensagem em partes usando || como separador
                 if (parts.Length == 2 && chaveAESRecebida)
                 {
-                    mensagemDecifrada = DecifrarMensagem(partes[0]);
+                    string decrypted = DecryptAES(parts[0]);
+                    bool valid = VerifySignature(decrypted, parts[1]);
+                    return (valid ? "V" : "X") + decrypted;
                 }
                 return msg;
             }
@@ -162,7 +152,6 @@ namespace Ficha3
                 return msg;
             }
         }
-
         private void enviar_Click(object sender, EventArgs e)// funcao para enviar mensagens
         {
             if (!chaveAESRecebida)
@@ -170,18 +159,17 @@ namespace Ficha3
                 MessageBox.Show("Chave AES ainda não recebida.");
                 return;
             }
-            string msg = txtMensagem.Text.Trim();
-            if (msg == "") return;
+            string plain = txtMensagem.Text.Trim();
+            if (plain == "") return;
 
-            string encrypted = EncryptAES(msg);
-            string signature = SignRSA(msg);
-            string fullMsg = encrypted + "||" + signature; // manda a mensagem seperada em 2 partes, a msg cifrada e a assinatura
+            string encrypted = EncryptAES(plain);
+            string signature = SignRSA(plain);
+            string fullMsg = encrypted + "||" + signature; // manda a mensagem separada em 2 partes, a msg cifrada e a assinatura
             Send(ProtocolSICmdType.DATA, fullMsg);
             txtMensagem.Clear();
-            Log($"[Eu]: {msg} ✓");
+            Log($"[Eu]: {plain}");
         }
-
-        private void sair_Click(object sender, EventArgs e) // funcao para fechar o chat
+        private void sair_Click(object sender, EventArgs e)// funcao para fechar o chat
         {
             try
             {
@@ -190,13 +178,12 @@ namespace Ficha3
                 {
                     Send(ProtocolSICmdType.EOT, "");// manda o protoloco de encerramento para o servidor
                 }
-                else
+                catch
                 {
-                    mensagemDecifrada = DecifrarMensagem(dados);
-                }
+                    // Se falhar ao enviar o EOT, não faz nada
 
                 }
-                if (tReceber != null && tReceber.IsAlive) // espera a thread de receber mensagens terminar
+                if (tReceber != null && tReceber.IsAlive)// espera a thread de receber mensagens terminar
                 {
                     tReceber.Join(1000);
                 }
@@ -210,18 +197,18 @@ namespace Ficha3
             }
             catch (Exception ex)
             {
-                Invoke(new Action(() => Log("Erro: " + ex.Message)));
+                MessageBox.Show("Erro ao fechar: " + ex.Message);
             }
         }
-
         // funcoes para criptografia e assinatura
-        string EncryptAES(string text) // funcao para encriptar mensagens usando a chave aes enviada pelo servidor
+        string EncryptAES(string text)// funcao para encriptar mensagens usando a chave aes enviada pelo servidor
         {
-            try
+            using (MemoryStream ms = new MemoryStream())
+            using (CryptoStream cs = new CryptoStream(ms, aesCliente.CreateEncryptor(), CryptoStreamMode.Write))
             {
                 byte[] data = Encoding.UTF8.GetBytes(text);
                 cs.Write(data, 0, data.Length);
-                cs.FlushFinalBlock();// garante que todos os dados sejam escritos corretamente
+                cs.FlushFinalBlock(); // garante que todos os dados sejam escritos corretamente
                 return Convert.ToBase64String(ms.ToArray());
             }
         }
@@ -235,12 +222,12 @@ namespace Ficha3
                 return sr.ReadToEnd();// le todos os dados desencriptados e retorna como string
             }
         }
-
         string SignRSA(string text)// funcao para assinar mensagens usando a chave de assinatura
         {
-            try
-            {
-                tReceber.Abort();
+            byte[] data = Encoding.UTF8.GetBytes(text);
+            byte[] sig = rsaSign.SignData(data, CryptoConfig.MapNameToOID("SHA256"));
+            return Convert.ToBase64String(sig);
+        }
 
         bool VerifySignature(string text, string sig64) // funcao para verificar a assinatura das mensagens
         {
@@ -248,11 +235,11 @@ namespace Ficha3
             byte[] sig = Convert.FromBase64String(sig64);
             return rsaSign.VerifyData(data, CryptoConfig.MapNameToOID("SHA256"), sig);
         }
-
         private void Log(string mensagem) // funcao para adicionar mensagens ao chat
         {
             if (rtbChat != null)
                 rtbChat.AppendText(mensagem + Environment.NewLine);
+            }
         }
     }
 }
