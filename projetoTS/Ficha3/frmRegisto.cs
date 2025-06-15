@@ -37,9 +37,8 @@ namespace Ficha3
         {
             try
             {
-                // Use a NEW connection for registration
-                using (TcpClient regClient = new TcpClient("127.0.0.1", 12345))
-                using (NetworkStream regNs = regClient.GetStream())
+                using (TcpClient regClient = new TcpClient("127.0.0.1", 12345)) // utilizando uma nova conexao para o registo
+                using (NetworkStream regNs = regClient.GetStream()) // criando o NetworkStream para enviar e receber dados
                 {
                     ProtocolSI regProtocolo = new ProtocolSI();
 

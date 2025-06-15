@@ -9,6 +9,7 @@ namespace Ficha3
 {
     public partial class frmLogin : Form
     {
+        // criacao dos objetos de conexao e protocolo
         private TcpClient client;
         private NetworkStream ns;
         private ProtocolSI protocolo;
@@ -16,10 +17,10 @@ namespace Ficha3
         public frmLogin()
         {
             InitializeComponent();
-            protocolo = new ProtocolSI();
+            protocolo = new ProtocolSI(); // inicializa o protocolo
         }
 
-        private void ConectarServidor()
+        private void ConectarServidor() // funcao para conectar ao servidor
         {
             try
             {
@@ -32,11 +33,11 @@ namespace Ficha3
             }
         }
 
-        private bool VerifyLogin(string username, string password)
+        private bool VerifyLogin(string username, string password) // função para verificar o login
         {
             try
             {
-                ConectarServidor();
+                ConectarServidor();// conecta ao servidor
 
                 // Envia comando de login
                 string loginData = $"LOGIN|{username}|{password}";
@@ -56,40 +57,39 @@ namespace Ficha3
             }
         }
 
-        private void btnEntrar_Click(object sender, EventArgs e)
+        private void btnEntrar_Click(object sender, EventArgs e) // função para entrar no chat após verificar o login
         {
             string password = txtPassword.Text;
             string username = txtUsername.Text;
-
-            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-            {
-                MessageBox.Show("Preencha todos os campos!");
-                return;
-            }
-
             try
             {
+                if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                {
+                    throw new Exception("Preencha todos os campos!"); // lança uma exceção se os campos estiverem vazios
+                }
+
                 if (VerifyLogin(username, password))
                 {
-                    MessageBox.Show("Login Realizado!");
-                    frmChat form1 = new frmChat(username, client, ns, protocolo);
+                    MessageBox.Show("Login Realizado", "Sucesso!", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    frmChat form1 = new frmChat(username, client, ns, protocolo); // cria o formulário de chat usando o mesmo cliente e protocolo
                     form1.Show();
                     this.Hide();
                 }
                 else
                 {
-                    MessageBox.Show("Username ou password inválido.");
+                    throw new Exception("Username ou password inválido."); // lança uma exceção se o login falhar
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro ao entrar: " + ex.Message);
+                MessageBox.Show("Erro ao entrar: " + ex.Message, "Erro !", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void btnRegistar_Click(object sender, EventArgs e)
+        private void btnRegistar_Click(object sender, EventArgs e) // função para abrir o formulário de registro
         {
             frmRegisto form3 = new frmRegisto();
+            form3.FormClosed += (s, args) => this.Close();
             form3.ShowDialog();
         }
     }
